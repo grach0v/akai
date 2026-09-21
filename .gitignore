@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# dora run artifacts (per-run node logs + session file), written next to each dataflow
+dataflows/**/out/

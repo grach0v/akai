@@ -1,0 +1,80 @@
+# Smallest useful program: one camera recorded to .rrd and shown live, with the
+# manager owning the lifecycle.
+#
+#   manager       <-- cam_high/cam_high_node_state, rerun_record/node_state, rerun_viewer/node_state
+#   manager       --> program_state --> cam_high, rerun_record, rerun_viewer
+#   cam_high      --> cam_high_image --> rerun_record
+#   rerun_record  --> out/rrd/<app_id>_<time>.rrd (H.264)  +  gRPC server :9876 (JPEG, live)
+#   rerun_viewer  --> a rerun viewer connected to that server
+#
+# The recorder is the hub: it writes the file and serves the same stream, and
+# the viewer only connects. To watch from another machine, run the viewer node
+# there with MODE__SERVER_URL pointing at this machine (or open the url in any
+# rerun viewer). The program leaves `boot` once the camera and the recorder
+# report `ready`, and ends (`disconnect`) on Ctrl-C, when the operator closes
+# the viewer window (`rerun_viewer` reports `finished`), or when the camera's
+# device stops delivering frames.
+#
+#   build: uv run dora build dataflows/tests/camera_rerun/camera_rerun.yml
+#   run:   uv run dora run   dataflows/tests/camera_rerun/camera_rerun.yml
+#
+# Node paths are relative to this file's directory.
+
+nodes:
+  - id: manager
+    build: uv sync --project ../../../nodes/manager
+    path: ../../../nodes/manager/.venv/bin/python
+    args: ../../../nodes/manager/src/main.py
+    inputs:
+      cam_high: cam_high/cam_high_node_state
+      rerun_record: rerun_record/node_state
+      rerun_viewer: rerun_viewer/node_state
+    outputs: [program_state]
+    env:
+      MODE__NAME: "simple"
+      MODE__PRODUCERS: '["cam_high", "rerun_record", "rerun_viewer"]'
+
+  - id: cam_high
+    build: uv sync --project ../../../nodes/opencv_camera
+    path: ../../../nodes/opencv_camera/.venv/bin/python
+    args: ../../../nodes/opencv_camera/src/main.py
+    inputs:
+      # faster than the camera: a captured frame waits at most 10 ms; the slot is taken once, so no duplicates
+      tick: { source: dora/timer/millis/10, queue_size: 1, queue_policy: drop_oldest }
+      program_state: manager/program_state
+    outputs: [cam_high_image, cam_high_node_state]
+    env:
+      CAMERA_NAME: "cam_high"
+      MODE__NAME: "camera"
+      MODE__SOURCE: "0"
+      MODE__WIDTH: "640"
+      MODE__HEIGHT: "480"
+      MODE__FPS: "30"
+      MODE__ENCODING: "jpeg"
+      MODE__JPEG_QUALITY: "80"
+
+  - id: rerun_record
+    build: uv sync --project ../../../nodes/rerun
+    path: ../../../nodes/rerun/.venv/bin/python
+    args: ../../../nodes/rerun/src/main.py
+    inputs:
+      program_state: manager/program_state
+      cam_high: cam_high/cam_high_image   # default queue: a recorder keeps every frame
+    outputs: [node_state]
+    env:
+      MODE__NAME: "record"
+      MODE__GRPC_PORT: "9876"
+      MODE__VIDEO_FPS: "30"
+      MODE__CAMERAS: '["cam_high"]'
+
+  - id: rerun_viewer
+    build: uv sync --project ../../../nodes/rerun
+    path: ../../../nodes/rerun/.venv/bin/python
+    args: ../../../nodes/rerun/src/main.py
+    inputs:
+      tick: { source: dora/timer/millis/500, queue_size: 1, queue_policy: drop_oldest }  # to notice a closed viewer window
+      program_state: manager/program_state
+    outputs: [node_state]
+    env:
+      MODE__NAME: "visualize"
+      MODE__SERVER_URL: "rerun+http://127.0.0.1:9876/proxy"

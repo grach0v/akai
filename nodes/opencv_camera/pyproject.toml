@@ -1,0 +1,27 @@
+# opencv_camera node — its own uv environment (dora + OpenCV).
+#
+# Not a package: `src/main.py` is run as a plain script by the venv's
+# interpreter, so a dataflow launches it as
+#   build: uv sync --project ../../nodes/opencv_camera
+#   path:  ../../nodes/opencv_camera/.venv/bin/python
+#   args:  ../../nodes/opencv_camera/src/main.py
+# (dora runs a bare `.py` path with the system python, not this venv.)
+[project]
+name = "opencv-camera"
+version = "0.1.0"
+description = "Dora node publishing frames from an OpenCV capture (webcam or file) as <name>_image."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dora-rs==1.0.1",
+    "opencv-python>=4.10",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
+src = ["src"]  # `config` / `modes` are first-party imports of the script

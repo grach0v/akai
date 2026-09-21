@@ -1,0 +1,25 @@
+# manager node — owns the program lifecycle (a state machine over node_state events).
+#
+# Not a package: `src/main.py` runs as a plain script under this venv:
+#   build: uv sync --project ../../nodes/manager
+#   path:  ../../nodes/manager/.venv/bin/python
+#   args:  ../../nodes/manager/src/main.py
+[project]
+name = "manager"
+version = "0.1.0"
+description = "Dora node owning the program lifecycle: consumes node_state tokens, broadcasts program_state."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dora-rs==1.0.1",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+    "python-statemachine>=2.5",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
+src = ["src"]

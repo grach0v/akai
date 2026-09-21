@@ -1,0 +1,28 @@
+# rerun node — live visualization (and later recording) of robot streams.
+#
+# Not a package: `src/main.py` runs as a plain script under this venv:
+#   build: uv sync --project ../../nodes/rerun
+#   path:  ../../nodes/rerun/.venv/bin/python
+#   args:  ../../nodes/rerun/src/main.py
+# The source dir is `src`, never `rerun`: a package named `rerun` would shadow the SDK.
+[project]
+name = "rerun-node"
+version = "0.1.0"
+description = "Dora node streaming images and state vectors to a rerun viewer."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "av>=18.1.0",
+    "dora-rs==1.0.1",
+    "numpy",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+    "rerun-sdk>=0.38.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
+src = ["src"]

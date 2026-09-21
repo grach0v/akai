@@ -1,0 +1,34 @@
+# Workspace root — a minimal project so `uv run` works from the repo root.
+#
+# dora pin. The node API (`dora-rs`) is the 1.0.1 wheel from PyPI. The CLI is
+# built from source at a pinned commit on dora's `main`, because the layout
+# this repo uses (program dataflows in nested directories sharing `modules/`
+# through an in-tree symlink) depends on two fixes that landed after the
+# 1.0.1 release:
+#   - dora-rs/dora#3350  module confinement accepts symlinks inside the project
+#   - dora-rs/dora#3465  project root of a symlinked entry file
+# The two versions interoperate: no wire-format change between them.
+# Once a release contains both, replace the git source with `dora-rs-cli==<ver>`.
+#
+# Building the CLI needs Rust >= 1.95 (`rustup update stable`).
+[project]
+name = "akai"
+version = "0.1.0"
+description = "Modular robot control, simulation and training stack built on dora-rs."
+requires-python = ">=3.11"
+dependencies = [
+    "dora-rs==1.0.1",
+    "dora-rs-cli",
+]
+
+[tool.uv.sources]
+dora-rs-cli = { git = "https://github.com/dora-rs/dora", rev = "080749c04ca451d22feb0b30d9672395d8dcb719", subdirectory = "apis/python/cli" }
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.410",
+    "ruff>=0.15.18",
+]
+
+[tool.uv]
+package = false
