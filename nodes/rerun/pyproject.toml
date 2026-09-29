@@ -1,4 +1,4 @@
-# rerun node — live visualization (and later recording) of robot streams.
+# rerun node — records robot streams to .rrd and serves them live; opens viewers.
 #
 # Not a package: `src/main.py` runs as a plain script under this venv:
 #   build: uv sync --project ../../nodes/rerun
@@ -8,7 +8,7 @@
 [project]
 name = "rerun-node"
 version = "0.1.0"
-description = "Dora node streaming images and state vectors to a rerun viewer."
+description = "Dora node recording any stream (cameras, joint states, a 3D robot) to rerun, and viewing it."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

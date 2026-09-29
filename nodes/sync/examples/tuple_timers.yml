@@ -1,0 +1,44 @@
+# The sync node's `tuple` mode live, driven by dora's built-in timers, with no node of
+# ours but sync:
+#
+#   dora/timer/millis/100 (fast), dora/timer/millis/330 (slow): an empty message each tick,
+#     stamped with dora's send `timestamp`
+#   sync: a tuple each time both have ticked since the last one, so one per slow tick. The
+#     fast timer ticks about three times meanwhile, each extra tick a *repeat* (logged, as
+#     `on_repeat: warn`). The two rates drift against each other, so the ticks of a tuple
+#     are 0 to 100 ms apart, and whenever that goes over `max_skew` (50 ms, by dora's send
+#     `timestamp`) a skew warning is logged, once each time it starts
+#   check (node-hub pyarrow-assert): asserts every tuple is one row of the two empty values
+#
+# Watch sync's warnings in the log; stop with Ctrl-C.
+#
+#   uv run dora build nodes/sync/examples/tuple_timers.yml
+#   uv run dora run   nodes/sync/examples/tuple_timers.yml
+#
+# Paths are relative to this file's directory.
+
+nodes:
+  - id: sync
+    build: uv sync --project .. --group examples
+    path: ../.venv/bin/python
+    args: ../src/main.py
+    inputs:
+      fast: dora/timer/millis/100
+      slow: dora/timer/millis/330
+    outputs: [tuple, node_state]
+    env:
+      MODE__NAME: "tuple"
+      MODE__INPUTS: '["fast", "slow"]'
+      MODE__OUTPUT: "tuple"
+      MODE__ON_REPEAT: "warn"
+      MODE__MAX_SKEW: "0.05"
+      MODE__SKEW_TIME: "timestamp"   # timer ticks carry no capture_time
+      MODE__ON_SKEW: "warn"
+
+  - id: check
+    path: ../.venv/bin/pyarrow-assert
+    args: --name check
+    inputs:
+      tuple: sync/tuple
+    env:
+      DATA: "[{'fast': [], 'slow': []}]"

@@ -22,7 +22,10 @@ class RecordModeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")  # a variable meant for another mode is a mistake
 
     name: Literal["record"] = "record"
-    # Directory for the recording, `<app_id>_<YYYYmmdd_HHMMSS>.rrd`, relative to the dataflow directory.
+    # Directory for the recording, relative to the dataflow directory. A session is one
+    # recording, `<app_id>_<YYYYmmdd_HHMMSS>`, written as `<recording>.rrd` (the raw streams)
+    # and, with a robot, `<recording>.fk.rrd` (its forward kinematics, a layer on the same
+    # recording id); the robot model itself goes to `<urdf name>.model.rrd` (see robot_urdf).
     rrd_dir: Path = Path("out/rrd")
     # The gRPC server viewers connect to (rerun+http://<host>:<port>/proxy). 0.0.0.0 admits remote viewers.
     bind_ip: str = "0.0.0.0"
@@ -39,9 +42,20 @@ class RecordModeConfig(BaseModel):
     # JPEG quality for the live stream when a camera sends raw rgb8 (a camera
     # sending JPEG is passed through untouched).
     live_jpeg_quality: int = Field(80, ge=1, le=100)
-    # Camera input ids to arrange in a grid above the time-series plot in the
-    # viewer. Empty: automatic layout. A JSON list in the env: MODE__CAMERAS='["cam_high"]'.
+    # What the inputs hold, by input id; an input listed nowhere is plotted as numbers.
+    # JSON lists in the env: MODE__CAMERAS='["cam_high"]'.
+    # Image inputs: recorded as video, shown in a grid in the viewer above one plot per
+    # part. With neither cameras nor a robot: the viewer's automatic layout.
     cameras: list[str] = []
+    # Depth-image inputs (uint16 millimetres).
+    depth: list[str] = []
+    # Joint-state inputs: plotted, and moving the 3D robot's joints (with robot_urdf).
+    joint_states: list[str] = []
+    # Optional robot URDF (relative to the dataflow directory), shown in 3D under `robot/`
+    # and moved by every `joint_state` stream: their `names` are URDF joint names. Its
+    # static model is written once to `<rrd_dir>/<urdf name>.model.rrd`, the dataset asset
+    # every recording shares, and sent to the live viewer.
+    robot_urdf: Path | None = None
 
 
 class VisualizeModeConfig(BaseModel):

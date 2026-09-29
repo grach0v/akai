@@ -1,0 +1,32 @@
+# sync node — bundles several streams into one message the moment each has a fresh sample.
+#
+# Not a package: `src/main.py` runs as a plain script under this venv:
+#   build: uv sync --project ../../nodes/sync
+#   path:  ../../nodes/sync/.venv/bin/python
+#   args:  ../../nodes/sync/src/main.py
+[project]
+name = "sync"
+version = "0.1.0"
+description = "Dora node joining several named vectors into one bundle once every input has a fresh sample."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dora-rs==1.0.1",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+]
+
+[dependency-groups]
+# The dora node-hub nodes the example dataflows (examples/) use, in this same environment:
+#   uv sync --project nodes/sync --group examples
+examples = [
+    "pyarrow-assert==0.5.0",
+    "pyarrow-sender==0.5.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
+src = ["src"]

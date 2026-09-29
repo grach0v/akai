@@ -1,0 +1,50 @@
+# The sync node's `tuple` mode against fixed data, with no node of ours but sync:
+#
+#   arm, gripper (node-hub pyarrow-sender): each sends one fixed array, then exits
+#   sync: bundles one message from each into a tuple
+#   check (node-hub pyarrow-assert): asserts the tuple equals the expected value, and fails
+#     the run if it does not
+#
+# The run ends by itself once the senders are done.
+#
+#   uv run dora build nodes/sync/examples/tuple_test.yml
+#   uv run dora run   nodes/sync/examples/tuple_test.yml
+#
+# Paths are relative to this file's directory.
+
+nodes:
+  - id: arm
+    path: ../.venv/bin/pyarrow-sender
+    args: --name arm
+    outputs: [data]
+    env:
+      DATA: "[0.1, 0.2, 0.3]"
+
+  - id: gripper
+    path: ../.venv/bin/pyarrow-sender
+    args: --name gripper
+    outputs: [data]
+    env:
+      DATA: "[0.7]"
+
+  - id: sync
+    build: uv sync --project .. --group examples
+    path: ../.venv/bin/python
+    args: ../src/main.py
+    inputs:
+      arm: arm/data
+      gripper: gripper/data
+    outputs: [tuple, node_state]
+    env:
+      MODE__NAME: "tuple"
+      MODE__INPUTS: '["arm", "gripper"]'
+      MODE__OUTPUT: "tuple"
+
+  - id: check
+    path: ../.venv/bin/pyarrow-assert
+    args: --name check
+    inputs:
+      tuple: sync/tuple
+    env:
+      # One row: a field per input, in MODE__INPUTS order, holding that input's array.
+      DATA: "[{'arm': [0.1, 0.2, 0.3], 'gripper': [0.7]}]"

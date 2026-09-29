@@ -219,3 +219,7 @@ __marimo__/
 
 # dora run artifacts (per-run node logs + session file), written next to each dataflow
 dataflows/**/out/
+nodes/**/examples/out/
+
+# MuJoCo writes its warnings here, next to wherever it runs
+MUJOCO_LOG.TXT
