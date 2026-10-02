@@ -1,0 +1,24 @@
+# Camera calibration of the tabletop cell: an input, produced by whatever calibrates the
+# cell (for a real cell, the calibration tool; for this simulated one, it is the design and
+# `schemas/build_ur10e_2f85.py` builds the MJCF cameras from it).
+#
+# Per camera:
+#   frame       the URDF frame the camera is rigidly mounted on
+#   extrinsics  [x, y, z, qx, qy, qz, qw]: the camera's optical frame (x right, y down,
+#               z forward) in `frame`, metres and a unit quaternion
+#   intrinsics  [fx, fy, cx, cy]: pinhole intrinsics in pixels, for images of width x height
+#   width, height  the image size the intrinsics are for
+
+cameras:
+  cam_overhead:  # over the table, looking down at the workspace in front of the arm
+    frame: world
+    extrinsics: [-1.3, 0.0, 1.15, -0.671598, 0.671598, -0.22126, 0.22126]
+    intrinsics: [415.6922, 415.6922, 320.0, 240.0]
+    width: 640
+    height: 480
+  cam_wrist:  # beside the fingers, looking past them to the work area
+    frame: tool0
+    extrinsics: [0.0, -0.08, 0.0408, -0.122183, 0.0, 0.0, 0.992508]
+    intrinsics: [312.7741, 312.7741, 320.0, 240.0]
+    width: 640
+    height: 480
