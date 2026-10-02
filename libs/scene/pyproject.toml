@@ -1,0 +1,25 @@
+# akai-scene — the scene descriptor format, shared by every node that reads one (the mujoco
+# node today; later IK, other simulators). Format and how to write one: assets/README.md.
+#
+# A node depends on it by path, editable, so a change here reaches every node:
+#   dependencies = [..., "akai-scene"]
+#   [tool.uv.sources]
+#   akai-scene = { path = "../../libs/scene", editable = true }
+[project]
+name = "akai-scene"
+version = "0.1.0"
+description = "The akai scene descriptor: a robot cell's controllable parts on top of its MJCF, mapped onto its URDF."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 110
+src = ["src"]
