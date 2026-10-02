@@ -7,13 +7,15 @@ Every mode implements the node protocol that main.py drives:
 3. `handle(event) -> bool`: handle one INPUT event; True stops the node.
 4. `close()`: release the resources; called however the loop ends.
 
-TODO: once the node has more than one mode, add an abstract base class `Mode`
+TODO: this node already has two modes: add an abstract base class `Mode`
 (`abc.ABC`, these four methods abstract) that every mode subclasses, so the protocol
 is explicit and a mode missing one fails when it is built, not mid-run.
 """
 
+from modes.align import AlignMode
 from modes.tuple import TupleMode
 
 MODES = {
+    "align": AlignMode,
     "tuple": TupleMode,
 }

@@ -10,10 +10,11 @@
 #     `timestamp`) a skew warning is logged, once each time it starts
 #   check (node-hub pyarrow-assert): asserts every tuple is one row of the two empty values
 #
-# Watch sync's warnings in the log; stop with Ctrl-C.
+# Watch sync's warnings in the log. It runs until stopped: `--stop-after` makes it a test that
+# passes when it ends by itself.
 #
 #   uv run dora build nodes/sync/examples/tuple_timers.yml
-#   uv run dora run   nodes/sync/examples/tuple_timers.yml
+#   uv run dora run   nodes/sync/examples/tuple_timers.yml --stop-after 5s
 #
 # Paths are relative to this file's directory.
 

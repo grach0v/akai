@@ -1,153 +1,140 @@
 # sync
 
-Joins several streams into one message.
-Dora has no built-in join, and a consumer that needs a whole-robot snapshot or
-command (every part at once) would otherwise have to wire, queue and match one
-input per part.
+Joins several streams into one message, a *tuple*, for a consumer that needs
+them together: a policy or recorder taking an observation of cameras and robot
+state, a robot taking all its parts' targets at once. Dora has no built-in join.
+The node assumes nothing about what the inputs carry. Two modes decide which
+messages go together:
 
-It assumes nothing about what the inputs carry: it bundles one message from
-each input into a *tuple*, whatever those messages are (images, joint vectors,
-anything), so a consumer that needs them together, such as a robot taking all
-its parts' targets at once, or a policy or recorder taking an observation of
-cameras and state, gets them in one message.
-
-## Layout
+1. **`tuple`**: the newest message of each input, as soon as every input has a
+   new one. For commands, where only the latest counts.
+2. **`align`**: per reference time (a tick of the observation clock), every
+   input's sample nearest it in time. For observations, where the elements must
+   show the same instant however late each one is delivered.
 
 ```
-pyproject.toml         # uv project: dora-rs, pyarrow, pydantic-settings; `examples` group: node-hub nodes
+pyproject.toml         # uv project; the `examples` group adds the node-hub nodes the examples use
 src/config.py          # SyncConfig: `mode`, one config class per mode picked by MODE__NAME
 src/main.py            # dora skeleton, identical in every node: config -> mode -> Node -> loop
-src/bundler.py         # when a tuple goes out, and the repeat and skew checks: the rules below
-src/modes/tuple.py     # `tuple`: one message holding a new message from every input
-examples/              # dataflows running sync with dora's timers and node-hub nodes only
+src/tuples.py          # the tuple both modes emit
+src/bundler.py         # `tuple` mode's rules: when a tuple goes out, repeats, skew
+src/modes/tuple.py     # `tuple` mode
+src/modes/align.py     # `align` mode
+examples/              # test dataflows: sync with dora's timers and node-hub nodes only
 ```
 
-## When a tuple goes out
+## The tuple output type
 
-The node keeps the latest message of each input and follows these rules:
+Both modes emit the same message, values and metadata apart as in every dora
+message:
 
-1. When a message arrives, it replaces that input's previous message. Messages
-   are not queued: the newest wins.
-2. If every input has sent a new message since the last tuple, the node emits a
-   tuple of them right away. It uses no timer, so a tuple waits only for the
-   slowest producer.
-3. If some input has not sent a new message yet, the node waits. It never
-   resends an old message and never emits a partial tuple, so nothing goes out
-   until every input has sent at least once.
-4. If a producer stops sending, tuples stop too. This is on purpose: resending
-   its last message would tell the consumer (a robot, the sim) that a dead part
-   is still alive and where it was.
+1. **Value:** a one-row Arrow struct with a field per input, named by its id, in
+   `inputs` order, holding that input's array, e.g.
+   `struct<cam_high: list<uint8>, arm_joint_state: list<double>>`. A consumer
+   reads an input's array as `value.field("cam_high")[0].values`.
+2. **Metadata:** every key of every input's metadata as `<input id>.<key>`
+   (`cam_high.encoding`, `arm_joint_state.names`, `cam_high.timestamp`: dora's
+   send time), plus the tuple's own `capture_time`. Nothing is converted or
+   dropped. Dora's metadata is flat, hence one key per input and key, and an
+   input id may not contain a `.`.
 
-Two conditions are handled as configured, each with `ignore`, `warn` or
-`error` (stop the node with an error):
+Inputs: every id in `inputs`, and `program_state` (the node stops on
+`disconnect`). Outputs: `<output>` (the tuple) and `node_state` (`ready`).
 
-1. **Repeat** (`on_repeat`, default `ignore`): an input sends again before its
-   tuple is complete, so its previous message is dropped (rule 1). Normal when
-   a fast producer waits on a slow one; a sign of trouble when the inputs
-   should arrive in lockstep. A warning is logged for every repeated message.
-2. **Skew** (`on_skew`, default `warn`, checked only with `max_skew` set): the
-   messages of a tuple are further apart in time than `max_skew`, so one
-   producer lags the others. Time is measured by `skew_time`: every input's
-   `capture_time` (the default; an input without one is an error), or dora's
-   send `timestamp`, which every message has. A warning is logged once when the skew appears,
-   not for every tuple while it lasts.
+Both modes check *skew*, how far apart in time a tuple's elements are, when
+`max_skew` is set, and handle it as `on_skew` says: `ignore`, `warn` or `error`
+(stop the node).
 
 ## `tuple` mode
 
-A tuple keeps values and metadata apart, as every dora message does:
-
-1. **Value:** a one-row Arrow struct with one field per input, named by its input
-   id, in `inputs` order, holding that input's array.
-2. **Metadata:** every key of every input's metadata as `<input id>.<key>`,
-   dora's send `timestamp` of each message included, plus the tuple's own
-   `capture_time`: the oldest of the inputs' `capture_time`s, when every input
-   carries one.
-
-For example, a camera and a joint state:
-
-| | content |
-| --- | --- |
-| value | `struct<cam_high: list<uint8>, arm_joint_state: list<double>>`, one row |
-| metadata | `cam_high.encoding`, `cam_high.width`, `cam_high.height`, `cam_high.capture_time`, `cam_high.timestamp`, `arm_joint_state.names`, `arm_joint_state.capture_time`, `arm_joint_state.timestamp`, `capture_time` |
-
-A consumer reads an input's array as `value.field("cam_high")[0].values` and
-its metadata as `metadata["cam_high.encoding"]`. Nothing is converted or
-dropped, and every metadata value keeps its type. Dora's metadata is flat (a
-nested dict would arrive as a string), hence one key per input and key rather
-than one dict per input; an input id may therefore not contain a `.`.
-
-| id | payload | metadata |
-| --- | --- | --- |
-| input: each of `inputs` (no `.` in the id) | any message | any |
-| input: `program_state` | `utf8[1]` | the node stops on `disconnect` |
-| output: `<output>` | `struct<input id: list<its type>, ...>`, one row | `<input id>.<key>` for every input's metadata; `capture_time` (the oldest input's), when every input has one |
-| output: `node_state` | `utf8[1]` | `ready` |
+1. A message replaces its input's previous one: the newest wins, nothing queues.
+2. Once every input has sent a new message since the last tuple, a tuple of them
+   goes out at once. There is no timer: a tuple waits only for the slowest input.
+3. Until then nothing goes out: no old message is resent, no partial tuple sent.
+   If a producer stops, tuples stop too, on purpose: resending its last message
+   would tell the consumer that a dead part is still alive.
+4. An input that sends again before its tuple is complete is a *repeat*, handled
+   as `on_repeat` says: normal when a fast producer waits on a slow one, trouble
+   when the inputs should arrive in lockstep.
+5. The tuple's `capture_time` is the oldest of its elements', when they all have
+   one. Skew is the spread of the elements' times (`skew_time`).
 
 | var | default | meaning |
 | --- | --- | --- |
-| `MODE__NAME` | `tuple` | |
+| `MODE__NAME` | required | `tuple` |
 | `MODE__INPUTS` | required | JSON list of the input ids, in field order |
 | `MODE__OUTPUT` | required | output id of the tuple |
-| `MODE__ON_REPEAT` | `ignore` | `ignore`, `warn` or `error` when an input sends again before its tuple is complete |
-| `MODE__MAX_SKEW` | unset | the most the messages of a tuple may be apart in time, in seconds; unset: not checked |
-| `MODE__ON_SKEW` | `warn` | `ignore`, `warn` or `error` when a tuple is over `MODE__MAX_SKEW` |
-| `MODE__SKEW_TIME` | `capture_time` | what skew is measured by: `capture_time` (required on every input) or `timestamp` (dora's send time) |
+| `MODE__ON_REPEAT` | `ignore` | `ignore`, `warn` or `error` on a repeat |
+| `MODE__MAX_SKEW` | unset | seconds; unset: not checked |
+| `MODE__ON_SKEW` | `warn` | `ignore`, `warn` (once when skew appears) or `error` |
+| `MODE__SKEW_TIME` | `capture_time` | the elements' time: `capture_time` (required on every input) or dora's send `timestamp` |
+
+## `align` mode
+
+1. Every input keeps its samples of the last `history` seconds. A sample's time
+   is its `capture_time`, or dora's send `timestamp` (`input_time`).
+2. Every message on the `reference` input adds a reference time t (its
+   `timestamp` or `capture_time`, by `reference_time`).
+3. t is settled once every input has a sample at or after it, so the nearest is
+   known, or once `timeout` has passed since t (then the nearest so far).
+   Reference times settle in order.
+4. A settled t becomes a tuple of every input's sample nearest t, with
+   `capture_time` = t. Skew is each element's distance from t; every tuple over
+   `max_skew` is reported, naming its elements.
+5. Until every input has sent once, reference times are dropped.
+
+So a camera whose frames arrive 25 ms after they were taken still lines up with
+the joint states captured at the same instant: delivery delay costs latency, not
+alignment. Give the inputs deep queues (`queue_size: 100`): the node chooses
+among samples rather than taking the newest.
+
+| var | default | meaning |
+| --- | --- | --- |
+| `MODE__NAME` | required | `align` |
+| `MODE__REFERENCE` | required | the input whose messages give the reference times |
+| `MODE__REFERENCE_TIME` | `timestamp` | a reference message's time: dora's send `timestamp` (a timer's tick) or `capture_time` |
+| `MODE__INPUTS` | required | JSON list of the input ids to align, in field order |
+| `MODE__INPUT_TIME` | `capture_time` | an input message's time: `capture_time` (required on every message) or dora's send `timestamp` |
+| `MODE__OUTPUT` | required | output id of the tuple |
+| `MODE__HISTORY` | `1.0` | seconds of samples kept per input |
+| `MODE__TIMEOUT` | `0.2` | seconds a reference time waits for every input |
+| `MODE__MAX_SKEW` | unset | seconds an element may be off its reference time; unset: not checked |
+| `MODE__ON_SKEW` | `warn` | `ignore`, `warn` (per tuple) or `error` |
+
+For example, an observation aligned to the observation clock the sim ticks on:
+
+```yaml
+    inputs:
+      tick: dora/timer/millis/33
+      cam_high: { source: sim/cam_overhead_image, queue_size: 100 }
+      arm_joint_state: { source: sim/arm_joint_state, queue_size: 100 }
+    outputs: [observation, node_state]
+    env:
+      MODE__NAME: "align"
+      MODE__REFERENCE: "tick"
+      MODE__INPUTS: '["cam_high", "arm_joint_state"]'
+      MODE__OUTPUT: "observation"
+      MODE__MAX_SKEW: "0.02"
+```
 
 ## Examples
 
-Two dataflows in `examples/` run the node with nothing of ours but sync: dora's
-built-in timers and nodes from the dora node hub (`pyarrow-sender`,
-`pyarrow-assert`: the `examples` dependency group of this node's `pyproject.toml`,
-installed into its environment by the examples' build step).
+The dataflows in `examples/` use nothing of ours but sync: dora's timers and the
+node-hub nodes `pyarrow-sender` and `pyarrow-assert` (installed by their build
+step). Each is a test: a run that ends with exit code 1 has failed.
 
-1. `tuple_test.yml` is a test. Two `pyarrow-sender`s send one fixed array each,
-   sync bundles them, and `pyarrow-assert` checks the tuple equals the expected
-   one: the run fails (exit 1) if it does not, and ends by itself otherwise.
-2. `tuple_timers.yml` shows the rules at work. A 100 ms and a 330 ms timer feed
-   sync, which emits one tuple per slow tick: the fast timer's extra ticks are
-   logged as repeats, and the drifting rates put some tuples over `max_skew`,
-   logged as skew. `pyarrow-assert` checks every tuple. Stop it with Ctrl-C.
+1. `tuple_test.yml`: two senders send one fixed array each; `pyarrow-assert`
+   checks the tuple. It ends by itself.
+2. `tuple_timers.yml`: a 100 ms and a 330 ms timer; one tuple per slow tick, the
+   fast timer's extra ticks logged as repeats, drifting rates logged as skew.
+3. `align_timers.yml`: a 100 ms reference and a 20 ms and a 30 ms input; every
+   tuple must hold each input's nearest tick (`max_skew` 20 ms, `on_skew: error`).
+
+The timer examples run until stopped, so run them with `--stop-after`:
 
 ```sh
-uv run dora build nodes/sync/examples/tuple_test.yml
+uv run dora build nodes/sync/examples/align_timers.yml
 uv run dora run   nodes/sync/examples/tuple_test.yml
-uv run dora build nodes/sync/examples/tuple_timers.yml
-uv run dora run   nodes/sync/examples/tuple_timers.yml
-```
-
-## Dataflow snippets
-
-The sim's joint targets from the web controller's per-part targets, as one
-message (the sim takes a tuple of named vectors):
-
-```yaml
-  - id: robot_target
-    build: uv sync --project ../../../nodes/sync
-    path: ../../../nodes/sync/.venv/bin/python
-    args: ../../../nodes/sync/src/main.py
-    inputs:
-      program_state: manager/program_state
-      arm_joint_target: { source: web/arm_joint_target, queue_size: 1, queue_policy: drop_oldest }
-      gripper_joint_target: { source: web/gripper_joint_target, queue_size: 1, queue_policy: drop_oldest }
-    outputs: [joint_target, node_state]
-    env:
-      MODE__NAME: "tuple"
-      MODE__INPUTS: '["arm_joint_target", "gripper_joint_target"]'
-      MODE__OUTPUT: "joint_target"
-      MODE__MAX_SKEW: "0.05"
-```
-
-An observation of cameras and robot state for a policy or a recorder:
-
-```yaml
-    inputs:
-      cam_high: sim/cam_overhead_image
-      cam_wrist: sim/cam_wrist_image
-      arm_joint_state: sim/arm_joint_state
-      gripper_joint_state: sim/gripper_joint_state
-    outputs: [observation, node_state]
-    env:
-      MODE__NAME: "tuple"
-      MODE__INPUTS: '["cam_high", "cam_wrist", "arm_joint_state", "gripper_joint_state"]'
-      MODE__OUTPUT: "observation"
+uv run dora run   nodes/sync/examples/tuple_timers.yml --stop-after 5s
+uv run dora run   nodes/sync/examples/align_timers.yml --stop-after 5s
 ```

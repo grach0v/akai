@@ -29,15 +29,11 @@ from collections.abc import Callable
 import pyarrow as pa
 from dora import Node
 
+import tuples
 from bundler import Bundler, SkewCheck
 from config import SyncConfig
 
 logger = logging.getLogger("sync")
-
-
-def one_row(array: pa.Array) -> pa.ListArray:
-    """`array` as the single row of a list array, the type of a tuple field."""
-    return pa.ListArray.from_arrays(pa.array([0, len(array)], pa.int32()), array)
 
 
 class TupleMode:
@@ -82,12 +78,7 @@ class TupleMode:
         self.skew.check(events, self.opts.inputs)
         captured = [e["metadata"].get("capture_time") for e in events]
         stamped = all(t is not None for t in captured)
-        values = pa.StructArray.from_arrays([one_row(e["value"]) for e in events], names=self.opts.inputs)
-        metadata = {
-            f"{input_id}.{key}": value
-            for input_id, event in zip(self.opts.inputs, events)
-            for key, value in event["metadata"].items()
-        }
+        values, metadata = tuples.build(self.opts.inputs, events)
         if stamped:
             metadata["capture_time"] = min(captured)
         self.node.send_output(self.opts.output, values, metadata=metadata)

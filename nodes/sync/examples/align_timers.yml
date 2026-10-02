@@ -1,0 +1,45 @@
+# A test of the sync node's `align` mode, driven by dora's built-in timers, with no node of
+# ours but sync:
+#
+#   dora/timer/millis/100 (tick): the reference, one tuple per tick
+#   dora/timer/millis/20 (fast), dora/timer/millis/30 (slow): the inputs, aligned by dora's send
+#     `timestamp` (timer ticks carry no capture_time)
+#   sync: per tick, the fast and the slow tick nearest it. The nearest slow tick is at most
+#     15 ms away, so with `max_skew` 20 ms and `on_skew: error` the node fails the run if it
+#     ever pairs a tick with anything but the nearest (the newest could be up to 30 ms off)
+#   check (node-hub pyarrow-assert): fails the run unless every tuple is one row of the two
+#     empty values
+#
+# It runs until stopped: `--stop-after` makes it a test that passes when it ends by itself.
+#
+#   uv run dora build nodes/sync/examples/align_timers.yml
+#   uv run dora run   nodes/sync/examples/align_timers.yml --stop-after 5s
+#
+# Paths are relative to this file's directory.
+
+nodes:
+  - id: sync
+    build: uv sync --project .. --group examples
+    path: ../.venv/bin/python
+    args: ../src/main.py
+    inputs:  # deep queues: align chooses among samples, it does not take the newest
+      tick: dora/timer/millis/100
+      fast: { source: dora/timer/millis/20, queue_size: 100 }
+      slow: { source: dora/timer/millis/30, queue_size: 100 }
+    outputs: [tuple, node_state]
+    env:
+      MODE__NAME: "align"
+      MODE__REFERENCE: "tick"
+      MODE__INPUTS: '["fast", "slow"]'
+      MODE__INPUT_TIME: "timestamp"
+      MODE__OUTPUT: "tuple"
+      MODE__MAX_SKEW: "0.015"
+      MODE__ON_SKEW: "error"
+
+  - id: check
+    path: ../.venv/bin/pyarrow-assert
+    args: --name check
+    inputs:
+      tuple: sync/tuple
+    env:
+      DATA: "[{'fast': [], 'slow': []}]"
