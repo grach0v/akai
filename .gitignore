@@ -223,3 +223,6 @@ nodes/**/examples/out/
 
 # MuJoCo writes its warnings here, next to wherever it runs
 MUJOCO_LOG.TXT
+
+# Claude Code: personal settings stay local (the vendored skills in .claude/skills are committed)
+.claude/settings.local.json

@@ -23,8 +23,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dora-rs", specifier = "==1.0.1" },
-    { name = "dora-rs-cli", git = "https://github.com/dora-rs/dora?subdirectory=apis%2Fpython%2Fcli&rev=080749c04ca451d22feb0b30d9672395d8dcb719" },
+    { name = "dora-rs", specifier = "==1.1.0" },
+    { name = "dora-rs-cli", specifier = "==1.1.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -35,7 +35,7 @@ dev = [
 
 [[package]]
 name = "dora-rs"
-version = "1.0.1"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -43,27 +43,40 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/fc/9dd2e1cc4da1caf46496353da6c12f7b7c90512186d828f1d587dc6deddc/dora_rs-1.0.1.tar.gz", hash = "sha256:8cef7fa133d93e7ca46581a9efef6b45b5768cecef5ee6b9e22632978b8fe8a2", size = 1690155, upload-time = "2026-09-03T12:21:54.217Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/39/6e/00cca25e3daef45fb95de290a0585a8281edb4ba2613ea6d5e94965e05fa/dora_rs-1.1.0.tar.gz", hash = "sha256:3df2e23d6e222aad08702a056f8dd6721ea92a1fb255ed1b8bd12dc12b688f06", size = 1891178, upload-time = "2026-10-08T10:09:40.912Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/8b/2040480f8393da850f544347a389dab6bf99c84131da9cb5a2273829a76f/dora_rs-1.0.1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:56fb3daf26a978e6f535b0d6b04ac3abd362aff62de6771cd74c2dee06207cb8", size = 24759810, upload-time = "2026-09-03T12:21:42.346Z" },
-    { url = "https://files.pythonhosted.org/packages/b9/4c/c563464b74cd31d801fe37c693751005717c80834210c1fa61cb44d7bd34/dora_rs-1.0.1-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:61fd33ba5a5cfa01ba4aed4c75bda490b5ad0e5d7180bde7b075d17e0c782486", size = 24061908, upload-time = "2026-09-03T12:21:29.714Z" },
-    { url = "https://files.pythonhosted.org/packages/da/20/125f14f222c2eab928b23d310eeed61c93e9805d30575d21f05df285fb84/dora_rs-1.0.1-cp311-abi3-manylinux_2_28_armv7l.whl", hash = "sha256:6b0075de47b8310bf3801f2ce70b13b6925ebe1c8a7b04c9084bcd11688506ea", size = 22804362, upload-time = "2026-09-03T12:21:32.351Z" },
-    { url = "https://files.pythonhosted.org/packages/cb/1b/98e0ce52006fbd6d91f33037c5a76ab12edf8c74a01062af39c4dab4c403/dora_rs-1.0.1-cp311-abi3-manylinux_2_28_i686.whl", hash = "sha256:7f1377dda91435ca9d69ecce88a621052c172c2eb07f9c0aa0c1634d6bbfc057", size = 25245130, upload-time = "2026-09-03T12:21:37.702Z" },
-    { url = "https://files.pythonhosted.org/packages/b8/80/f931008dec0806d3446de9d762cb2f16883530857e0941d36449b554b84b/dora_rs-1.0.1-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:a28d634659a23dc8df9fbd40ad093f712e202821060f949f3dba5af8f7f36377", size = 24887127, upload-time = "2026-09-03T12:21:39.886Z" },
-    { url = "https://files.pythonhosted.org/packages/cf/43/01a610cb1f696410698ffb9a6e6d5f2dd3c6ae22ad63aed366c00136b3ae/dora_rs-1.0.1-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:3255d040778b44542f3d03288268a22f85253db45099d60d33776b7ef92ac1c6", size = 29797596, upload-time = "2026-09-03T12:21:44.594Z" },
-    { url = "https://files.pythonhosted.org/packages/b5/f5/6668702f8a107c2a701bc8368d14c18d1d36b620c8c7cbc5ac2d83c58cf7/dora_rs-1.0.1-cp311-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:0febdd43c0c0b511c60def3691d83d69a54ed8543207af3bb238989f7a1f5c0b", size = 28151873, upload-time = "2026-09-03T12:21:46.781Z" },
-    { url = "https://files.pythonhosted.org/packages/06/51/0141e6fe69a7444115d0e9e56bbed234cd86035d3d5588f61d56e0778a61/dora_rs-1.0.1-cp311-abi3-musllinux_1_2_i686.whl", hash = "sha256:f774a046e6d869b4e40b9c9fea5d1a46175c3d83179b44d1f3310c788562b72e", size = 29301986, upload-time = "2026-09-03T12:21:49.576Z" },
-    { url = "https://files.pythonhosted.org/packages/04/b2/5032b628e1e46ef76180860a6f14e32b940d2979971e931630c6e10e3316/dora_rs-1.0.1-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:d8c8affc29e401558ac83136055750b9de10ac3d3a98855b59866b0c08260dfa", size = 29999168, upload-time = "2026-09-03T12:21:51.803Z" },
-    { url = "https://files.pythonhosted.org/packages/e9/3b/bb7c131dd2778909f4ec4d3e0151a7fa342a38ea8fa3ca64d2ef87d93f2f/dora_rs-1.0.1-cp311-abi3-win_amd64.whl", hash = "sha256:fbca33bf87e77fb9532e3bbeff023adb0e9b8e713d6f9106f114e0b0408666f5", size = 22396575, upload-time = "2026-09-03T12:21:55.601Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/d6/4e86287fdcb4a0b733800f3e744be7cf91ba51aa0daf6bc440f995575a8d/dora_rs-1.1.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:6a7af1799a5ed4d98e9c297cad653704d5709581ea6efd58cb5bc93c8c1f4236", size = 25313991, upload-time = "2026-10-08T10:09:29.73Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/e9/6ca64911ba0538a9b3cebee46d53f68146059953edb22855152c00a01901/dora_rs-1.1.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f20a00aaaaf539b000c4077a9e4b1280b33451550c42bba8c13acbd7d95d7b18", size = 24495932, upload-time = "2026-10-08T10:09:20.673Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/06/f146f1d7da5b758dc1efb62865d9a128aff9286ffa57f86eba18d2e305cc/dora_rs-1.1.0-cp311-abi3-manylinux_2_28_armv7l.whl", hash = "sha256:7b8f9c7cd1a4e85fe7d64c3ff8bed5098635b07fc61cb35a30ab13b14531532a", size = 23288963, upload-time = "2026-10-08T10:09:22.829Z" },
+    { url = "https://files.pythonhosted.org/packages/db/21/561bd1934e050de5826d066e25b001ba7a442aae24601bea11c76d700c38/dora_rs-1.1.0-cp311-abi3-manylinux_2_28_i686.whl", hash = "sha256:eb17910fe56659181963e1874e03ff2df1668063f334108ffaab3473258b5281", size = 25738574, upload-time = "2026-10-08T10:09:25.074Z" },
+    { url = "https://files.pythonhosted.org/packages/93/03/f7a654b610239b71be70cf29653d56eafa703b6b5e13712095f8ad7da4b7/dora_rs-1.1.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:788ca09301d03041f823bdd7a5aca1241718730c21e5928bbc9abcc45a7fd397", size = 25334591, upload-time = "2026-10-08T10:09:27.538Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/3e/af64db3e0b91d4e0e6ebde15c17fe54824e2dee99d325769ac41c47b43ea/dora_rs-1.1.0-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:82fd1b2e416dcf106fa7e3ad568d322d50189b9b1c08a0a278f5ef62ffc970be", size = 30506464, upload-time = "2026-10-08T10:09:31.899Z" },
+    { url = "https://files.pythonhosted.org/packages/90/40/132b2f4dc900c83e082dbd351d2931dc543e9f9dd84884512adb39e19c6e/dora_rs-1.1.0-cp311-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:950bc39d5f0f15045639671ee6f29cf08b6bdef7383bb0fd638b8f5960a9cefb", size = 28673191, upload-time = "2026-10-08T10:09:34.2Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/62/275080483a9724bdd8f091222232cb6024600a315db4f553289ef55f27f3/dora_rs-1.1.0-cp311-abi3-musllinux_1_2_i686.whl", hash = "sha256:32bc68dfa6b92bc7c56c720e7df241550e1297c1da14d5d93f53b2ef597ac401", size = 29908456, upload-time = "2026-10-08T10:09:36.465Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/f9/c64b3e5b732bc386e35a8ced791ca95f83d8c0c0ac1feec885b3dd17c07b/dora_rs-1.1.0-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:021669bea40408b04d9ec6db9e15a2c7974bbbf5c8705a32aaebc09b83d22b68", size = 30758848, upload-time = "2026-10-08T10:09:38.635Z" },
+    { url = "https://files.pythonhosted.org/packages/40/d6/b4bdbe95fbb0f0781e1ed2a9da5532aad0998ade1abc11e97914157f0472/dora_rs-1.1.0-cp311-abi3-win_amd64.whl", hash = "sha256:30dc9fae872623f6b1f98ae6278806e590ebafe7007197b646c3466814702fbc", size = 22948629, upload-time = "2026-10-08T10:09:42.236Z" },
 ]
 
 [[package]]
 name = "dora-rs-cli"
-version = "1.0.1"
-source = { git = "https://github.com/dora-rs/dora?subdirectory=apis%2Fpython%2Fcli&rev=080749c04ca451d22feb0b30d9672395d8dcb719#080749c04ca451d22feb0b30d9672395d8dcb719" }
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dora-rs" },
     { name = "uv" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/f8/f82960b257b30dc0dffa6ac4f2584a5a90e9ad1fa0e7b52528e93e5b5755/dora_rs_cli-1.1.0.tar.gz", hash = "sha256:d9e53e27ded70067a6754d6e161c8a5e7b5d5b997f83b489968b59b7d3715841", size = 1637189, upload-time = "2026-10-08T10:09:50.313Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f0/7a/5da05ac1efc200338d7a246bfac88ae67a1dc4c6b8aee21c400de1923198/dora_rs_cli-1.1.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:57f34ab2687feb827d1e8b92f101e16f24260f7160ec78c530e974322e96183b", size = 28521327, upload-time = "2026-10-08T10:09:34.301Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/79/d1c8aee22ab96fc12b83ff009b0846dce3d736fedd5d689b4a4d54e81f93/dora_rs_cli-1.1.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:88078b10f64af2ce3c5f935a7600a238b31fa38dd63d2413b73dbeb23510f879", size = 27380876, upload-time = "2026-10-08T10:09:20.941Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/52/002ee01b41c0f69d4fe4bfaa82681b60d95f945ab3b75c0153722000061c/dora_rs_cli-1.1.0-cp311-abi3-manylinux_2_28_armv7l.whl", hash = "sha256:3b6addd075f2f1497b8c79baece1865463049f077bc353d39346540eeee9ec87", size = 26407840, upload-time = "2026-10-08T10:09:23.934Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/4d/f568c9695ec7a0de4b44bc4c681cb104c18e537343f40ebc54779f008046/dora_rs_cli-1.1.0-cp311-abi3-manylinux_2_28_i686.whl", hash = "sha256:f57cdd9620dea900cbc24ba01d3d3994627edfef0a1295d13dc2197844bf74e7", size = 29156001, upload-time = "2026-10-08T10:09:28.107Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/e9/521b19e3c6dd41b233afd7fccd95eb9e9b3c3b51bae5c75141f0a98c68c4/dora_rs_cli-1.1.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:f681b189a0ab7aaee5f1346f86550aea651712c658c9f1c352469f9313cfc8eb", size = 28428805, upload-time = "2026-10-08T10:09:31.246Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/f3/53c11d540c20862974a05fc1842f791e174e3d673a7c23d407ad87ae4a9d/dora_rs_cli-1.1.0-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:4c367c0dd09bdc73a4b869e918f6155a0b38abca18d98af9183e5f8d0c234e3b", size = 33789656, upload-time = "2026-10-08T10:09:37.881Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/a0/ef3e17bacdbcbb40c6133e7c46aeb2b48a53c8a9c9bfb440eecf2b3fe7d0/dora_rs_cli-1.1.0-cp311-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:70b18dd2d2c201d2448d43882766b74095704ca56e89c8316428f8f042c7d85f", size = 32330200, upload-time = "2026-10-08T10:09:41.46Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/df/1e6a2d69765818a65107d6f5f03954e85579bb5982cfe60be9ea0ea3cac1/dora_rs_cli-1.1.0-cp311-abi3-musllinux_1_2_i686.whl", hash = "sha256:1da1a22ce41955ede2752917fe3b5f1eeb4f1bd94caa78b91a1d8aa72579f92e", size = 33655952, upload-time = "2026-10-08T10:09:44.323Z" },
+    { url = "https://files.pythonhosted.org/packages/54/b0/cdce2d03c250abefb41050f7d83fd2c0c7e9e57effa75948683918aa0cf1/dora_rs_cli-1.1.0-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:71e999f64ca8550f1422154bc8f487e3490638595e7c64897ca4019ee363efe6", size = 34119551, upload-time = "2026-10-08T10:09:47.767Z" },
+    { url = "https://files.pythonhosted.org/packages/de/e1/f8bac2142ff4f3260a081a2dcd7ff5346f5a3d2507324a17acecf81b8e34/dora_rs_cli-1.1.0-cp311-abi3-win_amd64.whl", hash = "sha256:75242b07334d0052a6fee6a7ee1136874285b6126ce6693a8518d5b18dec1001", size = 26284329, upload-time = "2026-10-08T10:09:52.125Z" },
 ]
 
 [[package]]
