@@ -45,6 +45,10 @@ Both modes check *skew*, how far apart in time a tuple's elements are, when
 `max_skew` is set, and handle it as `on_skew` says: `ignore`, `warn` or `error`
 (stop the node).
 
+Every `*_TIME` setting names a metadata key holding a time: a datetime, like
+dora's send `timestamp`, or seconds since the epoch, like `capture_time` (or a
+key of your own).
+
 ## `tuple` mode
 
 1. A message replaces its input's previous one: the newest wins, nothing queues.
@@ -67,12 +71,12 @@ Both modes check *skew*, how far apart in time a tuple's elements are, when
 | `MODE__ON_REPEAT` | `ignore` | `ignore`, `warn` or `error` on a repeat |
 | `MODE__MAX_SKEW` | unset | seconds; unset: not checked |
 | `MODE__ON_SKEW` | `warn` | `ignore`, `warn` (once when skew appears) or `error` |
-| `MODE__SKEW_TIME` | `capture_time` | the elements' time: `capture_time` (required on every input) or dora's send `timestamp` |
+| `MODE__SKEW_TIME` | `capture_time` | metadata key of the elements' time (required on every input) |
 
 ## `align` mode
 
 1. Every input keeps its samples of the last `history` seconds. A sample's time
-   is its `capture_time`, or dora's send `timestamp` (`input_time`).
+   is dora's send `timestamp`, or its `capture_time` (`input_time`).
 2. Every message on the `reference` input adds a reference time t (its
    `timestamp` or `capture_time`, by `reference_time`).
 3. t is settled once every input has a sample at or after it, so the nearest is
@@ -83,18 +87,19 @@ Both modes check *skew*, how far apart in time a tuple's elements are, when
    `max_skew` is reported, naming its elements.
 5. Until every input has sent once, reference times are dropped.
 
-So a camera whose frames arrive 25 ms after they were taken still lines up with
-the joint states captured at the same instant: delivery delay costs latency, not
-alignment. Give the inputs deep queues (`queue_size: 100`): the node chooses
+Aligned by `capture_time`, a camera whose frames arrive 25 ms after they were
+taken still lines up with the joint states captured at the same instant:
+delivery delay costs latency, not alignment. By send `timestamp` it would be
+paired with whatever was sent at the tick. Give the inputs deep queues (`queue_size: 100`): the node chooses
 among samples rather than taking the newest.
 
 | var | default | meaning |
 | --- | --- | --- |
 | `MODE__NAME` | required | `align` |
 | `MODE__REFERENCE` | required | the input whose messages give the reference times |
-| `MODE__REFERENCE_TIME` | `timestamp` | a reference message's time: dora's send `timestamp` (a timer's tick) or `capture_time` |
+| `MODE__REFERENCE_TIME` | `timestamp` | metadata key of a reference message's time (a timer only has `timestamp`) |
 | `MODE__INPUTS` | required | JSON list of the input ids to align, in field order |
-| `MODE__INPUT_TIME` | `capture_time` | an input message's time: `capture_time` (required on every message) or dora's send `timestamp` |
+| `MODE__INPUT_TIME` | `timestamp` | metadata key of an input message's time (required on every message) |
 | `MODE__OUTPUT` | required | output id of the tuple |
 | `MODE__HISTORY` | `1.0` | seconds of samples kept per input |
 | `MODE__TIMEOUT` | `0.2` | seconds a reference time waits for every input |
@@ -113,6 +118,7 @@ For example, an observation aligned to the observation clock the sim ticks on:
       MODE__NAME: "align"
       MODE__REFERENCE: "tick"
       MODE__INPUTS: '["cam_high", "arm_joint_state"]'
+      MODE__INPUT_TIME: "capture_time"
       MODE__OUTPUT: "observation"
       MODE__MAX_SKEW: "0.02"
 ```

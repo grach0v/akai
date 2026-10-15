@@ -37,8 +37,7 @@ class TupleModeConfig(BaseModel):
     # What to do when a tuple is over max_skew: "ignore", "warn" (once when the skew
     # appears) or "error" (stop the node).
     on_skew: Action = "warn"
-    # What skew is measured by: every input's `capture_time` (when its data was captured;
-    # an input without one is an error), or dora's send `timestamp` (every message has one).
+    # Metadata key skew is measured by (a datetime or seconds since the epoch); every input needs it.
     skew_time: SkewTime = "capture_time"
 
     @field_validator("inputs")
@@ -60,13 +59,12 @@ class AlignModeConfig(BaseModel):
     # The input whose messages give the reference times, one tuple each: typically the
     # observation clock, a dora timer shared with the producers.
     reference: str
-    # Which time of a reference message is the reference time: dora's send `timestamp` (a
-    # timer's tick time; a timer carries nothing else) or its `capture_time`.
+    # Metadata key of a reference message's time; a dora timer only has `timestamp`.
     reference_time: SkewTime = "timestamp"
     # The inputs to align; each becomes a field of the tuple, in this order. A JSON list in the env.
     inputs: list[str] = Field(min_length=1)
-    # Which time of an input message it is aligned by: its `capture_time` (when it was captured;
-    # required on every message) or dora's send `timestamp`.
+    # Metadata key of an input message's time. Late producers (a camera, a render) need a capture
+    # time like `capture_time` to line up; dora's send `timestamp` is on every message.
     input_time: SkewTime = "timestamp"
     # Output id of the tuple.
     output: str

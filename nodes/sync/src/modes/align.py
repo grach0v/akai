@@ -1,8 +1,9 @@
 """`align` mode: one tuple per reference time, of every input's sample nearest it in time.
 
 A reference input (typically the observation clock, a dora timer shared with the producers)
-gives the reference times; every sample's time is its `capture_time` (or, by `input_time`,
-dora's send `timestamp`). Delivery delays then cost latency, never alignment. The rules:
+gives the reference times. A sample's time is, by `input_time`, dora's send `timestamp` (every
+message has one) or its `capture_time` (when it was taken): aligned by capture time, delivery
+delays cost latency, never alignment. The rules:
 
 1. Every input keeps its samples of the last `history` seconds.
 2. A reference message adds its reference time (`reference_time`: dora's send `timestamp`, or its
@@ -32,7 +33,7 @@ import pyarrow as pa
 from dora import Node
 
 import tuples
-from bundler import report
+from bundler import message_time, report
 from config import SyncConfig
 
 logger = logging.getLogger("sync")
@@ -131,5 +132,4 @@ def _time(event: dict, key: str) -> float:
     """An event's time in seconds: its `capture_time`, or dora's send `timestamp` (a datetime)."""
     if key not in event["metadata"]:
         raise ValueError(f"{event['id']}: no `{key}` in its metadata to align by")
-    t = event["metadata"][key]
-    return t.timestamp() if key == "timestamp" else float(t)
+    return message_time(event["metadata"], key)

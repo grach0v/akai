@@ -18,13 +18,21 @@ It keeps the dora events as they arrived; a mode decides what goes out, this onl
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Literal
 
 # What to do about a condition: nothing, log a warning, or stop the node with an error.
 Action = Literal["ignore", "warn", "error"]
 
-# Which time skew is measured by: the producers' `capture_time`, or dora's send `timestamp`.
-SkewTime = Literal["capture_time", "timestamp"]
+# The metadata key of a message's time: dora's send `timestamp` (a datetime, on every message),
+# `capture_time`, or any other key holding a datetime or seconds since the epoch.
+SkewTime = str
+
+
+def message_time(metadata: dict, key: str) -> float:
+    """The time under `key`, in seconds since the epoch."""
+    t = metadata[key]
+    return t.timestamp() if isinstance(t, datetime) else float(t)
 
 
 def report(logger: logging.Logger, action: Action, text: str) -> None:
@@ -86,5 +94,4 @@ class SkewCheck:
     def _time(self, event: dict, input_id: str) -> float:
         if self._time_key not in event["metadata"]:
             raise ValueError(f"{input_id}: no `{self._time_key}` in its metadata to check skew by")
-        time = event["metadata"][self._time_key]
-        return time.timestamp() if self._time_key == "timestamp" else float(time)
+        return message_time(event["metadata"], self._time_key)
