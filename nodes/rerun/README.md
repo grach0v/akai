@@ -43,25 +43,50 @@ things:
   with rerun's low-latency batcher. Cameras are sent as JPEG: the camera's own
   bytes when it already sends JPEG (no CPU spent), otherwise compressed here.
 
-Why not H.264 live as well: the native viewer decodes H.264 through an
-external ffmpeg process and holds back 18 samples before it shows a frame,
-600 ms at 30 fps, and it restarts that decoder on every hiccup, which shows
-as a loading spinner. A JPEG is decoded the moment it arrives. Measured on
-this stack, a frame is on the live server 6 ms (median) after its capture.
-
 A taken port is refused at startup rather than recorded around.
 
-The config says what each input holds (the streams' metadata is in the
-top-level README's message conventions); an input it does not list is plotted:
+### Why the live stream is JPEG, not H.264
 
-| input | recorded as | entity |
+H.264 would let both sinks share one recording, but the live view would lag
+about 0.4 s. rerun's viewer decodes H.264 through ffmpeg with one frame thread
+per core, and ffmpeg holds back roughly one frame per thread. A JPEG shows up
+as soon as it arrives.
+
+Measured with rerun 0.39, 30 fps, on a 10-core Mac (median, capture to screen):
+
+| live stream | local | over a good internet link | bandwidth per camera |
+| --- | --- | --- | --- |
+| JPEG (quality 75) | 40 ms | 60 ms | ~12 Mbit/s |
+| H.264 | 408 ms | 423 ms | ~0.9 Mbit/s |
+
+ffmpeg can get down to one frame of lag (`-threads 1` or slice threading), but
+rerun hard-codes its decoder flags. If that changes, switch to H.264 everywhere.
+
+A *stream* is an input, or one element of a `sync` tuple input: a tuple (an
+Arrow struct) is unpacked into its elements, named `<input>/<field>`, each with
+its own metadata (the tuple's `<field>.<key>` keys). Its metadata says what it
+holds; other numeric streams are plotted. Every stream is logged at
+the entity named like it (`arm_joint_state`, `observation/cam_high`):
+
+| stream | must carry | recorded as |
 | --- | --- | --- |
-| listed in `MODE__CAMERAS`: `uint8[N]` + `encoding=rgb8`/`jpeg`, `width`, `height` | file: `rr.VideoStream` (H.264); live: `rr.EncodedImage` (JPEG) | the input id, or the camera's frustum when calibrated (below) |
-| listed in `MODE__DEPTH`: `uint16[w*h]` + `width`, `height` | `rr.DepthImage` (millimetres) | the input id |
-| listed in `MODE__JOINT_STATES`: a named vector | `rr.Scalars`, and the 3D robot's joints (below) | as any numeric vector |
-| any other numeric vector | `rr.Scalars`, series named by metadata `names` | `<part>/<input id>` with metadata `part`, else the input id |
+| `encoding` `rgb8` / `jpeg` | `uint8[N]` + `width`, `height` | file: `rr.VideoStream` (H.264); live: `rr.EncodedImage` (JPEG); in 3D when calibrated (below) |
+| `encoding` `uint16` | `uint16[w*h]` + `width`, `height` | `rr.DepthImage` (millimetres) |
+| listed in `MODE__JOINT_STATES` | a named vector (`names`) | `rr.Scalars`, and the 3D robot's joints (below) |
+| anything else | a numeric array | `rr.Scalars`: with `names`, one entity per component, `<stream>/<name>`, its line labelled with the stream; without, one entity |
 
-So a part's measured and commanded joints share one plot (`<part>`).
+Every message is logged at its time by `MODE__INPUT_TIME`, on a timeline of
+that name: dora's send `timestamp` by default, since every message has one, or
+`capture_time` when the producers stamp it (then every message needs it).
+
+A tuple is one aligned sample. Each element is logged at its own time, plus the
+tuple's index on a timeline named after the input (`observation` = 0, 1, 2,
+...), so a recording of observations is one row per observation and no
+element's time is lost.
+
+A stream missing a key its role
+requires, or a non-numeric stream listed nowhere, stops the node with an error
+naming it; a stream listed under two roles is a config error.
 
 **3D robot** (`MODE__ROBOT_URDF`): the robot's URDF, through rerun's own
 `rerun.urdf.UrdfTree`, following the `rerun-data-model` and `rerun-urdf` skills
@@ -75,38 +100,52 @@ plus a shared asset:
 | `<urdf name>.model.rrd` | asset: the static model (visual meshes, joint transforms at rest on `/robot/tf_static`), recording id `<urdf name>_model` | identical for every recording: written once, registered on a catalog dataset as an asset (`dataset.register_asset`) so the viewer loads it with every segment |
 
 The live viewer gets all three. Every message on a `MODE__JOINT_STATES` input is turned into
-transforms for the joints its `names` metadata lists, which must be the URDF's
-joint names (a producer maps its own onto them: the sim through the scene
-descriptor's `urdf_joints` / `urdf_scale`). A joint the URDF does not have is
+transforms, on the same timelines as its scalars, for the joints its `names` metadata lists, which must be the URDF's
+joint names (a producer maps its own onto them: the sim through its parts'
+`urdf_joints` / `urdf_scale`). A joint the URDF does not have is
 skipped with one warning. Mimic joints, which a gripper reports only through its
 driver, get `driver * multiplier + offset` as the URDF declares; the
 transforms' parent and child frames are the URDF link names, the same the model
 uses, so the chain connects.
 
-A calibrated camera (image metadata `frame`, `extrinsics`, `intrinsics`) is placed
-in the robot's frames, the way the `rerun-data-model` skill models a camera. On its
-first image, `robot/cameras/<camera>` gets a static `Transform3D` from `frame` to
-`<camera>_optical_frame` (extrinsics) and a `Pinhole` from there into
-`<camera>_image_plane` (intrinsics), and its images go to
-`robot/cameras/<camera>/image`, which sits in the image plane: the viewer draws
-them inside the frustum, and a camera mounted on the arm (`tool0`) moves with
-it. Other images stay under their input id, and every camera also gets a 2D view.
+**Calibrated cameras** (`MODE__CALIBRATION`): the cell's calibration file
+gives every camera's `frame` (the URDF frame it is mounted on), `extrinsics`,
+`intrinsics` and image size. An image whose `camera` metadata names one of them
+is placed in the robot's frames on its first message, the way the
+`rerun-data-model` skill models a camera. Depth images stay 2D. It needs `MODE__ROBOT_URDF`, since `frame` is one of its links.
+`<stream>/calibration` gets a static `Transform3D` from `frame` to
+`<stream>_optical_frame` (the extrinsics) and a `Pinhole` from there into
+`<stream>_image_plane` (the intrinsics), and the stream's images sit in the
+image plane: the viewer draws them inside the frustum, and a camera mounted on
+the arm (`tool0`) moves with it. An image of another size than its calibration
+is for stops the node. An image without a calibrated `camera` stays 2D.
 
-**Layout**: with cameras or a robot configured, the blueprint puts the
-camera grid and the 3D view on top and one time-series plot per part (or other
-numeric stream) below; it is re-sent as new streams appear. Otherwise the
-viewer's automatic layout decides.
+**Layout**: the camera grid and the 3D view (the robot and every camera) on
+top, and below either the plots of `MODE__PLOTS` (plot name -> its entities,
+e.g. a joint's measured and commanded lines together) or one plot of every
+numeric stream. Sent at start and again whenever a new camera appears.
 
-Every message is logged at its `capture_time`, which every stream must carry, so
-streams line up by when they were captured. Encoders are flushed and the file
-closed on stop.
+To use your own layout, set `MODE__BLUEPRINT` to a Python file that defines
+`blueprint`:
+
+```python
+import rerun.blueprint as rrb
+
+blueprint = rrb.Blueprint(rrb.Spatial2DView(origin="/observation/cam_wrist_image"))
+```
+
+It is sent to every viewer and into the file, instead of the generated layout.
+(A saved `.rbl` cannot be applied to a live viewer in rerun 0.39, so the
+blueprint is code.)
+
+Encoders are flushed and the file closed on stop.
 
 ### Inputs and outputs
 
 | id              | source                  | meaning |
 | --------------- | ----------------------- | ------- |
 | `program_state` | `manager/program_state` | the node stops on `disconnect` |
-| `<any id>`      | any stream              | recorded; keep the default queue so no frame is dropped |
+| `<any id>`      | any stream              | recorded; give it a deep queue (`queue_size: 1000`), a recorder must not drop messages, not even while it starts |
 
 Output `node_state`: `ready` once the sinks are up.
 
@@ -124,10 +163,13 @@ Output `node_state`: `ready` once the sinks are up.
 | `MODE__H264_PRESET` | `veryfast` | libx264 preset: `ultrafast` … `medium`, CPU vs file size |
 | `MODE__KEYFRAME_INTERVAL` | `60` | frames between H.264 keyframes in the file (2 s at 30 fps) |
 | `MODE__LIVE_JPEG_QUALITY` | `80` | JPEG quality for the live stream when a camera sends rgb8 |
-| `MODE__CAMERAS` | `[]` | JSON list of the image inputs: recorded as video, laid out in a grid in the viewer, e.g. `'["cam_high"]'` |
-| `MODE__DEPTH` | `[]` | JSON list of the depth-image inputs |
-| `MODE__JOINT_STATES` | `[]` | JSON list of the joint-state inputs, which also move the 3D robot |
-| `MODE__ROBOT_URDF` | unset | robot URDF shown in 3D and moved by `joint_state` streams, relative to the dataflow directory |
+| `MODE__INPUT_TIME` | `timestamp` | metadata key of the time messages are logged at: a datetime (dora's `timestamp`) or seconds since the epoch (`capture_time`, or your own) |
+| `MODE__JOINT_STATES` | `[]` | JSON list of the joint-state streams, which also move the 3D robot |
+| `MODE__PLOTS` | `{}` | JSON object, plot name -> the entities it shows: a whole stream, or one component `<stream>/<name>`, e.g. `'{"elbow": ["arm_joint_state/elbow_joint", "joint_target/elbow_joint"]}'` (measured next to commanded); empty: one plot of all |
+| `MODE__ROBOT_URDF` | unset | robot URDF shown in 3D and moved by the `MODE__JOINT_STATES` streams, relative to the dataflow directory |
+| `MODE__CALIBRATION` | unset | camera calibration file (YAML), relative to the dataflow directory, e.g. `assets/universal_robots/ur10e/calibration/tabletop.yaml` |
+| `MODE__SCENE` | unset | a scene file (format: `assets/README.md`) giving `MODE__ROBOT_URDF` and `MODE__CALIBRATION` instead (its `urdf`, `calibration`); each comes one way, not both |
+| `MODE__BLUEPRINT` | unset | Python file defining `blueprint`, sent instead of the generated layout |
 
 ## `visualize` mode
 
@@ -169,11 +211,10 @@ Any rerun viewer works as well: `rerun --connect rerun+http://<robot>:9876/proxy
     args: ../../../nodes/rerun/src/main.py
     inputs:
       program_state: manager/program_state
-      cam_high: cam_high/cam_high_image
+      cam_high: { source: cam_high/cam_high_image, queue_size: 1000 }
     outputs: [node_state]
     env:
       MODE__NAME: "record"
-      MODE__CAMERAS: '["cam_high"]'
 
   - id: rerun_viewer
     build: uv sync --project ../../../nodes/rerun

@@ -1,4 +1,4 @@
-# akai-scene
+# akai_scene
 
 The scene file format as a Python package. A scene file names everything the
 nodes need to know about a robot cell (its URDF, its camera calibration, its
@@ -22,6 +22,7 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
 | `Scene` | `urdf`, `calibration` (paths, or None) and `mujoco` (a `MujocoScene`, or None) |
 | `MujocoScene` | `model` (the MJCF path) and `parts` (name -> `PartSpec`) |
 | `PartSpec` | one part: `joints`, `actuators`, `urdf_joints`, `urdf_scale`, and the defaults applied: `actuator_names`, `urdf_names`, `scale` |
+| `load_calibration(path) -> dict[str, CameraCalibration]` | read and validate a calibration file: its cameras by name (`frame`, `extrinsics`, `intrinsics`, `width`, `height`, `depth`) |
 | `one_of(option, explicit, scene, from_scene)` | a value from the config or from the scene file: raises if both give it, None if neither does |
 
 ## Using it in a node
@@ -30,10 +31,10 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
 
    ```toml
    # nodes/<node>/pyproject.toml
-   dependencies = [..., "akai-scene"]
+   dependencies = [..., "akai_scene"]
 
    [tool.uv.sources]
-   akai-scene = { path = "../../libs/scene", editable = true }
+   akai_scene = { path = "../../libs/akai_scene", editable = true }
    ```
 
 2. Give the config an explicit field for every value the node needs, plus an

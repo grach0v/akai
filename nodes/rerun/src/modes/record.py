@@ -10,19 +10,24 @@ id), sent to two sinks, because the file and a live viewer want different things
   (`rerun --connect rerun+http://<host>:<port>/proxy`), on this machine or on
   another. Camera streams are sent as JPEG images, the camera's own bytes when
   it already produces JPEG. The viewer decodes an image instantly, whereas its
-  H.264 decoder holds back 18 samples (600 ms at 30 fps) and restarts on every
-  hiccup. The stream uses rerun's low-latency batcher.
+  H.264 decoder (an ffmpeg process with one frame thread per core) lags ~0.4 s
+  (README: "Why the live stream is JPEG"). The stream uses rerun's low-latency batcher.
 
-The config says what each input holds; any input it does not list is plotted:
+A stream is an input, or one element of a `sync` tuple input: a tuple (an Arrow struct)
+is unpacked into its elements, `<input>/<field>`, each with its own metadata (the tuple's
+`<field>.<key>` keys). What a stream holds comes from its metadata:
 
-    listed in `cameras`       -> file: rr.VideoStream (H.264), live: rr.EncodedImage
-    listed in `depth`         -> rr.DepthImage (uint16 millimetres)
-    listed in `joint_states`  -> rr.Scalars, and the 3D robot's joints (with `robot_urdf`)
+    encoding rgb8 / jpeg      -> file: rr.VideoStream (H.264), live: rr.EncodedImage
+    encoding uint16           -> rr.DepthImage (millimetres)
+    numeric, in joint_states  -> rr.Scalars, and the 3D robot's joints (with `robot_urdf`)
     anything else numeric     -> rr.Scalars, series named by `names`
 
-A numeric stream of a robot part (metadata `part`) is logged under `<part>/`
-(`arm/arm_joint_state`, `arm/arm_joint_target`), so a part's measured and
-commanded joints share one plot; any other stream is logged under its input id.
+Every message is logged at its time by `input_time`, on a timeline of that name: dora's send
+`timestamp` (every message has one) or its `capture_time`. A tuple's elements are logged at
+their own times, plus the tuple's index on a timeline named after the input, so a recording of
+observations is one row per observation (see `_record_tuple`). A stream is logged at the entity
+named like it (`arm_joint_state`, `observation/cam_high`), and a stream missing a key its role
+requires stops the node with an error naming it.
 
 With `robot_urdf` set, the robot is shown in 3D under `robot/` (see robot.py),
 split the way the `rerun-data-model` / `rerun-urdf` skills split a robot dataset:
@@ -31,21 +36,21 @@ split the way the `rerun-data-model` / `rerun-urdf` skills split a robot dataset
     <recording>.fk.rrd       layer: forward kinematics of every joint state (same recording id)
     <urdf name>.model.rrd    asset: the static URDF model, written once, shared by all recordings
 
-The live viewer gets all three. A calibrated camera (image metadata `frame`,
-`extrinsics`, `intrinsics`) is placed in the robot's frames and its images drawn
-inside its frustum in 3D; see `_camera_entity`.
+The live viewer gets all three. An image whose `camera` is in the `calibration` file is placed
+in the robot's frames and drawn inside its frustum in 3D; see `log_calibration`.
 
-Every message is logged at its `capture_time`, the repo-wide metadata key, so
-streams line up by when they were captured, not when they arrived.
+The viewer layout (blueprint) is the `blueprint` file's, or generated from the robot, the plots
+and the cameras, and sent again when a new camera appears.
 
-Inputs:  program_state, plus any stream wired in the dataflow (recorders keep
-         the default queue, they must not drop frames).
+Inputs:  program_state, plus any stream wired in the dataflow (give them a deep queue:
+         a recorder must not drop messages).
 Outputs: node_state (`ready`).
 """
 
 from __future__ import annotations
 
 import logging
+import runpy
 import socket
 from collections.abc import Callable
 from datetime import datetime
@@ -55,6 +60,7 @@ import numpy as np
 import pyarrow as pa
 import rerun as rr
 import rerun.blueprint as rrb
+from akai_scene import CameraCalibration, load_calibration
 from dora import Node
 from rerun.chunk import OptimizationProfile
 
@@ -64,11 +70,14 @@ from robot import RobotUrdf
 logger = logging.getLogger("rerun")
 
 
-def listening(port: int) -> bool:
-    """True if something already accepts TCP connections on 127.0.0.1:port."""
+def listening(bind_ip: str, port: int) -> bool:
+    """True if something already accepts TCP connections where a server bound to bind_ip:port
+    would be reached: bind_ip itself, or 127.0.0.1 for 0.0.0.0. Connecting, not binding: a
+    wildcard bind succeeds next to a server on 127.0.0.1:port, which then keeps local viewers."""
+    host = "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.25)
-        return s.connect_ex(("127.0.0.1", port)) == 0
+        return s.connect_ex((host, port)) == 0
 
 
 class H264Encoder:
@@ -128,25 +137,73 @@ def live_image(data: np.ndarray, md: dict, jpeg_quality: int) -> rr.EncodedImage
     raise ValueError(f"unsupported image encoding {md['encoding']!r}")
 
 
-def build_blueprint(cameras: dict[str, str], robot: str | None, plots: list[str]) -> rrb.Blueprint:
-    """Cameras in a grid and the 3D robot on top, one time-series plot per part (or
-    stream) below, so every stream is visible at once (the automatic layout tends
-    to surface just one). `cameras`: view name (the input id) -> the entity its images land on."""
+def require(md: dict, stream: str, *keys: str) -> None:
+    """Stop with an error naming the stream when its metadata lacks a key its role requires."""
+    missing = [k for k in keys if k not in md]
+    if missing:
+        raise ValueError(f"{stream}: metadata has no {missing} (see the README's message conventions)")
+
+
+def message_time(md: dict, key: str, stream: str) -> float:
+    """The time under metadata `key`, in seconds since the epoch: a datetime (like dora's send
+    `timestamp`) or a number of seconds (like `capture_time`)."""
+    require(md, stream, key)
+    t = md[key]
+    return t.timestamp() if isinstance(t, datetime) else float(t)
+
+
+def log_calibration(recordings: list[rr.RecordingStream], stream: str, cal: CameraCalibration) -> None:
+    """Place a calibrated camera in the robot's frames, the way the `rerun-data-model` skill
+    models a camera: `<stream>/calibration` holds a static Transform3D from the URDF frame the
+    camera is mounted on to `<stream>_optical_frame` (the extrinsics) and a Pinhole from there
+    into `<stream>_image_plane` (the intrinsics), and the stream's images sit in the image plane,
+    so the viewer draws them in the frustum."""
+    optical, plane = f"{stream}_optical_frame", f"{stream}_image_plane"
+    x, y, z, qx, qy, qz, qw = cal.extrinsics
+    fx, fy, cx, cy = cal.intrinsics
+    extrinsics = rr.Transform3D(
+        translation=[x, y, z],
+        quaternion=rr.Quaternion(xyzw=[qx, qy, qz, qw]),
+        parent_frame=cal.frame,
+        child_frame=optical,
+    )
+    intrinsics = rr.Pinhole(
+        resolution=[cal.width, cal.height],
+        focal_length=[fx, fy],
+        principal_point=[cx, cy],
+        camera_xyz=rr.ViewCoordinates.RDF,  # the extrinsics' optical frame: x right, y down, z forward
+        image_plane_distance=0.1,
+        parent_frame=optical,
+        child_frame=plane,
+    )
+    for rec in recordings:
+        rec.log(f"{stream}/calibration", extrinsics, intrinsics, static=True)
+        rec.log(stream, rr.CoordinateFrame(plane), static=True)
+
+
+def build_blueprint(
+    cameras: list[str], calibrated: list[str], robot: str | None, plots: dict[str, list[str]]
+) -> rrb.Blueprint:
+    """The cameras in a grid and the 3D robot (with the calibrated cameras in their frustums) on
+    top, the plots below: every stream visible at once, where the automatic
+    layout tends to surface just one."""
     top = []
     if cameras:
-        top.append(
-            rrb.Grid(*[rrb.Spatial2DView(origin=entity, name=name) for name, entity in cameras.items()])
-        )
+        top.append(rrb.Grid(*[rrb.Spatial2DView(origin=f"/{cam}", name=cam) for cam in cameras]))
     if robot is not None:
-        top.append(rrb.Spatial3DView(origin=robot, name="robot"))
-    rows, shares = [], []
-    if top:
-        rows.append(rrb.Horizontal(*top))
-        shares.append(3)
+        contents = [f"{robot}/**", *(f"/{cam}/**" for cam in calibrated)]
+        top.append(rrb.Spatial3DView(origin=robot, contents=contents, name="robot"))
     if plots:
-        rows.append(rrb.Horizontal(*[rrb.TimeSeriesView(origin=p, name=p) for p in plots]))
-        shares.append(1)
-    return rrb.Blueprint(rrb.Vertical(*rows, row_shares=shares), collapse_panels=True)
+        views = [
+            rrb.TimeSeriesView(name=name, contents=[f"/{s}/**" for s in streams])
+            for name, streams in plots.items()
+        ]
+    else:
+        views = [rrb.TimeSeriesView(origin="/", name="plots")]
+    rows, shares = [rrb.Horizontal(*top)] if top else [], [3] if top else []
+    return rrb.Blueprint(
+        rrb.Vertical(*rows, rrb.Horizontal(*views), row_shares=[*shares, 1]), collapse_panels=True
+    )
 
 
 class RecordMode:
@@ -159,7 +216,8 @@ class RecordMode:
         self._handlers: dict[str, Callable[[dict], bool]] = {
             "program_state": self._on_program_state,
         }
-        if listening(opts.grpc_port):  # rerun would only log the failed bind and record without serving
+        # rerun would only log a failed bind and record without serving
+        if listening(opts.bind_ip, opts.grpc_port):
             raise RuntimeError(
                 f"port {opts.grpc_port} is taken (a leftover rerun viewer or recorder?). "
                 f"Close it or set MODE__GRPC_PORT to a free port."
@@ -191,14 +249,13 @@ class RecordMode:
             logger.info(
                 "record: robot model %s, forward kinematics layer %s.fk.rrd", model_path, self.recording_id
             )
-        # The layout: the cameras (by input id: where their images land, which moves into
-        # the robot once a calibrated image arrives), the robot, and one plot per part or
-        # stream in arrival order. The blueprint is re-sent whenever it changes.
-        self._image_entity: dict[str, str] = {cam: cam for cam in opts.cameras}
-        self._calibrated: set[str] = set()  # input ids whose camera calibration is logged
-        self._plots: list[str] = []
-        self._named: set[str] = set()  # series entities already seen (their names logged)
-        self._send_blueprint()
+        self._calibration = load_calibration(opts.calibration) if opts.calibration else {}  # by camera
+        self._images: list[str] = []  # image and depth streams, in the order they appeared
+        self._calibrated_size: dict[str, tuple[int, int]] = {}  # stream -> the size it is calibrated for
+        self._blueprint = runpy.run_path(str(opts.blueprint))["blueprint"] if opts.blueprint else None
+        self._named: set[str] = set()  # series entities whose line label is logged
+        self._tuples: dict[str, int] = {}  # tuple input -> index of its next tuple
+        self._send_layout()
         logger.info(
             "record: writing %s, serving rerun+http://%s:%d/proxy", self.path, opts.bind_ip, opts.grpc_port
         )
@@ -231,67 +288,103 @@ class RecordMode:
         return event["value"][0].as_py() == "disconnect"
 
     def _on_stream(self, event: dict) -> bool:
-        input_id, md = event["id"], event["metadata"]
-        data = event["value"].to_numpy(zero_copy_only=False)
-        for rec in (self.file, self.live):
-            rec.set_time("capture_time", timestamp=md["capture_time"])
-        if input_id in self.opts.cameras:
-            self._log_image(self._camera_entity(input_id, md), data, md)
-        elif input_id in self.opts.depth:
-            depth = data.reshape(int(md["height"]), int(md["width"]))
-            self._log_both(input_id, rr.DepthImage(depth, meter=1000.0))
+        value, md = event["value"], event["metadata"]
+        if pa.types.is_struct(
+            value.type
+        ):  # a sync tuple: one field per element, its metadata `<field>.<key>`
+            self._record_tuple(event["id"], value, md)
         else:
-            self._log_series(input_id, data, md)
-            if input_id in self.opts.joint_states and self.robot is not None:
-                self._send_transforms(md["names"], data.tolist(), md["capture_time"])
+            timestamps = {self.opts.input_time: message_time(md, self.opts.input_time, event["id"])}
+            self._set_times(timestamps, {})
+            self._record(event["id"], value, md, timestamps, {})
         return False
+
+    def _record_tuple(self, input_id: str, value: pa.StructArray, md: dict) -> None:
+        """A tuple as one aligned sample: every element logged at its own time (its
+        `<field>.<input_time>` key) and at the tuple's index on a timeline named after the input,
+        so a recording of observations is one row per observation and no element's time is lost."""
+        index = self._tuples.get(input_id, 0)
+        self._tuples[input_id] = index + 1
+        sequences = {input_id: index}
+        for field in value.type:
+            prefix = f"{field.name}."
+            element_md = {k.removeprefix(prefix): v for k, v in md.items() if k.startswith(prefix)}
+            stream = f"{input_id}/{field.name}"
+            timestamps = {self.opts.input_time: message_time(element_md, self.opts.input_time, stream)}
+            self._set_times(timestamps, sequences)
+            self._record(stream, value.field(field.name)[0].values, element_md, timestamps, sequences)
+        for rec in (self.file, self.live):  # set_time sticks: later messages must not carry it
+            rec.disable_timeline(input_id)
+
+    def _set_times(self, timestamps: dict[str, float], sequences: dict[str, int]) -> None:
+        """Set these timelines on both recordings, for the next logs (`set_time` sticks)."""
+        for rec in (self.file, self.live):
+            for timeline, seconds in timestamps.items():
+                rec.set_time(timeline, timestamp=seconds)
+            for timeline, index in sequences.items():
+                rec.set_time(timeline, sequence=index)
+
+    def _record(
+        self, stream: str, value: pa.Array, md: dict, timestamps: dict[str, float], sequences: dict[str, int]
+    ) -> None:
+        """One message of a stream, logged by the role the config gives it, at the times already
+        set (`_set_times`); they are passed on for the transforms, which are sent as columns."""
+        data = value.to_numpy(zero_copy_only=False)
+        encoding = md.get("encoding")
+        if encoding in ("rgb8", "jpeg", "uint16"):
+            require(md, stream, "width", "height")
+            self._place_image(stream, md, depth=encoding == "uint16")
+            if encoding == "uint16":
+                depth = data.reshape(int(md["height"]), int(md["width"]))
+                self._log_both(stream, rr.DepthImage(depth, meter=1000.0))
+            else:
+                self._log_image(stream, data, md)
+        elif encoding is not None:
+            raise ValueError(f"{stream}: unsupported encoding {encoding!r}")
+        else:
+            if not (pa.types.is_integer(value.type) or pa.types.is_floating(value.type)):
+                raise ValueError(f"{stream}: {value.type} values without an `encoding`")
+            if stream in self.opts.joint_states:
+                require(md, stream, "names")
+            self._log_series(stream, data, md)
+            if stream in self.opts.joint_states and self.robot is not None:
+                self._send_transforms(md["names"], data.tolist(), timestamps, sequences)
+
+    def _place_image(self, stream: str, md: dict, depth: bool) -> None:
+        """On an image stream's first message: add it to the layout, and put it in 3D when its
+        `camera` is calibrated (color only: depth stays 2D).
+        Every message: check its size against the calibration."""
+        if stream not in self._images:
+            self._images.append(stream)
+            if self._blueprint is None:
+                self._send_layout()  # with this camera
+            cal = self._calibration.get(md.get("camera"))
+            if cal is not None and not depth:
+                log_calibration([self.file, self.live], stream, cal)
+                self._calibrated_size[stream] = (cal.width, cal.height)
+            logger.info("record: %s (camera %s, %s)", stream, md.get("camera"), "3D" if stream in self._calibrated_size else "2D")
+        size = self._calibrated_size.get(stream)
+        if size is not None and size != (md["width"], md["height"]):
+            raise ValueError(
+                f"{stream}: {md['width']}x{md['height']} images, calibrated for {size[0]}x{size[1]}"
+            )
+
+    def _send_layout(self) -> None:
+        """Send the viewer layout: the `blueprint` file's, or one generated from the robot, the
+        plots and the cameras seen so far (sent again when a new camera appears)."""
+        blueprint = self._blueprint
+        if blueprint is None and (self._images or self.robot is not None or self.opts.plots):
+            robot = f"/{self.robot.root}" if self.robot else None
+            blueprint = build_blueprint(self._images, list(self._calibrated_size), robot, self.opts.plots)
+        if blueprint is not None:  # else: the viewer's automatic layout
+            for rec in (self.file, self.live):
+                rec.send_blueprint(blueprint)
 
     # -- logging -------------------------------------------------------------
 
     def _log_both(self, entity: str, archetype) -> None:
         self.file.log(entity, archetype)
         self.live.log(entity, archetype)
-
-    def _camera_entity(self, input_id: str, md: dict) -> str:
-        """Where an image goes. A calibrated camera of a recording with a robot goes into the
-        robot's frames, the way the `rerun-data-model` skill models a camera: on its first image,
-        `robot/cameras/<camera>` gets the extrinsics (a static Transform3D from the URDF frame
-        the camera is mounted on to `<camera>_optical_frame`) and the intrinsics (a Pinhole from
-        there into `<camera>_image_plane`), and `robot/cameras/<camera>/image`, where its images
-        go, sits in the image plane, so the viewer draws them in the frustum. Any other image
-        goes to its input id."""
-        if self.robot is None or "extrinsics" not in md:
-            return input_id
-        camera = md["camera"]
-        entity = f"{self.robot.root}/cameras/{rr.escape_entity_path_part(camera)}"
-        image_entity = f"{entity}/image"
-        if input_id not in self._calibrated:
-            self._calibrated.add(input_id)
-            optical, plane = f"{camera}_optical_frame", f"{camera}_image_plane"
-            x, y, z, qx, qy, qz, qw = md["extrinsics"]
-            fx, fy, cx, cy = md["intrinsics"]
-            extrinsics = rr.Transform3D(
-                translation=[x, y, z],
-                quaternion=rr.Quaternion(xyzw=[qx, qy, qz, qw]),
-                parent_frame=md["frame"],
-                child_frame=optical,
-            )
-            intrinsics = rr.Pinhole(
-                resolution=[int(md["width"]), int(md["height"])],
-                focal_length=[fx, fy],
-                principal_point=[cx, cy],
-                camera_xyz=rr.ViewCoordinates.RDF,  # the extrinsics' optical frame: x right, y down, z forward
-                image_plane_distance=0.1,
-                parent_frame=optical,
-                child_frame=plane,
-            )
-            for rec in (self.file, self.live):
-                rec.log(entity, extrinsics, intrinsics, static=True)
-                rec.log(image_entity, rr.CoordinateFrame(plane), static=True)
-            if input_id in self._image_entity:
-                self._image_entity[input_id] = image_entity
-                self._send_blueprint()
-        return image_entity
 
     def _log_image(self, entity: str, data: np.ndarray, md: dict) -> None:
         self.live.log(entity, live_image(data, md, self.opts.live_jpeg_quality))
@@ -303,37 +396,31 @@ class RecordMode:
         for sample in encoder.encode(frame):
             self.file.log(entity, sample)
 
-    def _send_transforms(self, names: list[str], values: list[float], capture_time: float) -> None:
-        """This joint state's forward kinematics, as one chunk at its capture time, to the layer and live."""
-        update = self.robot.transforms(names, values, capture_time)
+    def _send_transforms(
+        self, names: list[str], values: list[float], timestamps: dict[str, float], sequences: dict[str, int]
+    ) -> None:
+        """This joint state's forward kinematics, as one chunk at its times, to the layer and live."""
+        update = self.robot.transforms(names, values, timestamps, sequences)
         if update is None:
             return
         indexes, columns = update
         for rec in (self.fk, self.live):
             rec.send_columns(self.robot.transforms_entity, indexes=indexes, columns=columns)
 
-    def _log_series(self, input_id: str, data: np.ndarray, md: dict) -> None:
-        """A numeric vector as one series per component. A part's streams share its plot."""
-        if "part" in md:
-            entity, plot = f"{md['part']}/{input_id}", md["part"]
-        else:
-            entity = plot = input_id
-        if entity not in self._named:
-            self._named.add(entity)
-            if "names" in md:
-                for rec in (self.file, self.live):
-                    rec.log(entity, rr.SeriesLines(names=list(md["names"])), static=True)
-            if plot not in self._plots:
-                self._plots.append(plot)
-                self._send_blueprint()
-        self._log_both(entity, rr.Scalars(data.astype(np.float64)))
-
-    def _send_blueprint(self) -> None:
-        """Only with something to arrange (cameras or a robot); otherwise the viewer's automatic layout."""
-        if not self.opts.cameras and self.robot is None:
+    def _log_series(self, stream: str, data: np.ndarray, md: dict) -> None:
+        """A numeric vector. With `names`, every component is its own entity, `<stream>/<name>`, whose
+        line is labelled with the stream: plots can then put the same joint of different streams
+        side by side (measured next to commanded). Without names, the vector is one entity."""
+        if "names" not in md:
+            self._log_both(stream, rr.Scalars(data.astype(np.float64)))
             return
-        blueprint = build_blueprint(
-            self._image_entity, f"/{self.robot.root}" if self.robot else None, self._plots
-        )
-        for rec in (self.file, self.live):
-            rec.send_blueprint(blueprint)
+        names = md["names"]
+        if len(names) != len(data):
+            raise ValueError(f"{stream}: {len(data)} values but {len(names)} names")
+        for name, value in zip(names, data):
+            entity = f"{stream}/{rr.escape_entity_path_part(name)}"
+            if entity not in self._named:
+                self._named.add(entity)
+                for rec in (self.file, self.live):
+                    rec.log(entity, rr.SeriesLines(names=[stream]), static=True)
+            self._log_both(entity, rr.Scalars(float(value)))
