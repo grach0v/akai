@@ -59,13 +59,13 @@ nodes:
     args: ../../../nodes/rerun/src/main.py
     inputs:
       program_state: manager/program_state
-      cam_high: cam_high/cam_high_image   # default queue: a recorder keeps every frame
+      cam_high: { source: cam_high/cam_high_image, queue_size: 1000 }   # deep queue: a recorder keeps every frame
     outputs: [node_state]
     env:
       MODE__NAME: "record"
       MODE__GRPC_PORT: "9876"
+      MODE__INPUT_TIME: "capture_time"   # producers stamp it: log when the data was taken, not sent
       MODE__VIDEO_FPS: "30"
-      MODE__CAMERAS: '["cam_high"]'
 
   - id: rerun_viewer
     build: uv sync --project ../../../nodes/rerun

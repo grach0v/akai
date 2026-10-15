@@ -1,19 +1,9 @@
 """`camera` mode — the default: stream frames from one camera device.
 
-Two threads:
-
-* `CameraReader` (background) owns the `cv2.VideoCapture`. It reads frames as
-  fast as the device delivers them (`read()` blocks until the next frame),
-  encodes each one (rgb8 or jpeg) and keeps only the latest, stamped with its
-  wall-clock capture time. When the device stops delivering, the thread marks
-  itself ended and stops.
-* `CameraMode` (dora/main thread) publishes. On every `tick` from a dora timer
-  it takes the latest frame out of the slot and sends it on
-  `<camera_name>_image`; an empty slot means nothing new, so a frame is never
-  sent twice, and a tick faster than the camera only shortens the time a frame
-  waits in the slot. When the reader has ended it reports `finished` on
-  `<camera_name>_node_state` and waits for the manager's `disconnect` or
-  dora's STOP.
+* `CameraReader` (background thread) reads frames as the device delivers them and keeps the
+  latest, encoded and stamped with its capture time.
+* `CameraMode` (dora thread) sends that frame on every `tick`, once: an empty slot sends nothing.
+  When the device stops, it reports `finished` and waits for `disconnect` or STOP.
 
 Inputs:  tick (dora/timer), program_state (optional).
 Outputs: <camera_name>_image, <camera_name>_node_state.
@@ -40,7 +30,7 @@ logger = logging.getLogger("opencv_camera")
 @dataclass(frozen=True)
 class Frame:
     data: np.ndarray  # flat uint8: raw RGB bytes or a JPEG buffer
-    metadata: dict  # encoding, width, height, capture_time (wall-clock seconds at capture)
+    metadata: dict  # camera, encoding, width, height, capture_time
 
 
 class CameraReader:
@@ -84,9 +74,7 @@ class CameraReader:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, opts.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, opts.height)
         cap.set(cv2.CAP_PROP_FPS, opts.fps)
-        cap.set(
-            cv2.CAP_PROP_BUFFERSIZE, 1
-        )  # no driver-side frame queue (V4L2 honours it, AVFoundation ignores it)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # no driver queue (V4L2 only)
         got = (
             cap.get(cv2.CAP_PROP_FRAME_WIDTH),
             cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
@@ -106,10 +94,8 @@ class CameraReader:
     def _encode(self, frame_bgr: np.ndarray) -> np.ndarray:
         """Flat uint8 array in the configured wire encoding.
 
-        TODO(perf): for `jpeg` this re-encodes a frame OpenCV just decoded from the
-        camera's own MJPEG stream (~0.4 ms at 640x480 on an M-series Mac, several
-        ms at 1080p on a Raspberry Pi). With fourcc=MJPG, V4L2 can hand over the
-        compressed frame untouched via CAP_PROP_CONVERT_RGB=0; AVFoundation cannot.
+        TODO(perf): `jpeg` re-encodes what OpenCV just decoded from the camera's MJPEG; on V4L2,
+        CAP_PROP_CONVERT_RGB=0 would pass the camera's JPEG through.
         """
         if self._opts.encoding == "jpeg":
             ok, buf = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, self._opts.jpeg_quality])
@@ -120,7 +106,9 @@ class CameraReader:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            ok, frame_bgr = self._cap.read()  # blocks until the device delivers the next frame
+            ok, frame_bgr = self._cap.read()  # blocks until the next frame
+            # TODO(capture time): when read() returned, tens of ms after exposure. Use the driver's
+            # buffer timestamp (V4L2), or subtract a delay measured per camera.
             capture_time = time.time()
             if not ok:
                 logger.warning("%s: device stopped delivering frames", self._name)
@@ -128,6 +116,7 @@ class CameraReader:
                 return
             height, width = frame_bgr.shape[:2]
             metadata = {
+                "camera": self._name,
                 "encoding": self._opts.encoding,
                 "width": width,
                 "height": height,

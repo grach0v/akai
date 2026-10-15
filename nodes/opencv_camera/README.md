@@ -37,7 +37,7 @@ Any other input id raises: an unexpected input on a producer is a wiring bug.
 
 | id                         | payload              | metadata |
 | -------------------------- | -------------------- | -------- |
-| `<camera_name>_image`      | `uint8[N]`           | `encoding` (`rgb8` \| `jpeg`), `width`, `height`, `capture_time` |
+| `<camera_name>_image`      | `uint8[N]`           | `camera`, `encoding` (`rgb8` \| `jpeg`), `width`, `height`, `capture_time` |
 | `<camera_name>_node_state` | `utf8[1]` state token | none |
 
 - `rgb8`: the raveled H×W×3 RGB frame, `N = width * height * 3`.
@@ -50,7 +50,7 @@ Any other input id raises: an unexpected input on a producer is a wiring bug.
 
 `rgb8` at 30 FPS is heavy (27 MB/s at 640×480). Consumers that may fall behind
 should wire the image input with `queue_size: 1, queue_policy: drop_oldest`;
-recorders keep the default queue.
+recorders give it a deep queue (`queue_size: 1000`) instead: they must not drop frames.
 
 ## Config
 
