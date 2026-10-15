@@ -66,7 +66,7 @@ YAML, written by hand: one file naming everything the nodes need to know about a
 cell, so a dataflow names the cell once instead of every file in every node. It
 is a convenience: each node can be given the same through its own config. Every
 section is optional, paths are relative to the file, and every node reads it
-through the `akai-scene` package ([`libs/scene`](../libs/scene)), which defines
+through the `akai_scene` package ([`libs/akai_scene`](../libs/akai_scene)), which defines
 and validates the format.
 
 ```yaml
@@ -100,12 +100,8 @@ The `mujoco` node takes `parts` in the same format through its own config
 with its URDF counterpart: same name, zero and direction need nothing; a
 different name needs `urdf_joints`; a different unit or range needs
 `urdf_scale`, e.g. the ratio of the two joint ranges. Unknown keys, a list of the
-wrong length, a file that does not exist and a name the MJCF does not have are
-errors. Check a scene file, its parts against the MJCF included:
-
-```sh
-nodes/mujoco/.venv/bin/python nodes/mujoco/src/scene.py assets/<vendor>/<robot>/scenes/<scene>.yaml
-```
+wrong length and a file that does not exist are errors when a node reads the
+scene file, and a name the MJCF does not have when the sim starts.
 
 ## The calibration file
 
@@ -128,3 +124,4 @@ cameras:
 | `extrinsics` | `[x, y, z, qx, qy, qz, qw]`: the camera's optical frame (x right, y down, z forward) in `frame`, metres and a unit quaternion |
 | `intrinsics` | `[fx, fy, cx, cy]`: pinhole intrinsics in pixels |
 | `width`, `height` | the image size the intrinsics are for |
+| `depth` | optional, `true`: the camera also gives a depth image aligned to its color image (same intrinsics and size) |

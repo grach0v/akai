@@ -16,9 +16,12 @@ cameras:
     intrinsics: [415.6922, 415.6922, 320.0, 240.0]
     width: 640
     height: 480
+    depth: true  # an RGB-D camera: depth aligned to the color image
+
   cam_wrist:  # beside the fingers, looking past them to the work area
     frame: tool0
     extrinsics: [0.0, -0.08, 0.0408, -0.122183, 0.0, 0.0, 0.992508]
     intrinsics: [312.7741, 312.7741, 320.0, 240.0]
     width: 640
     height: 480
+    depth: true  # an RGB-D camera: depth aligned to the color image

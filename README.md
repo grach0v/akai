@@ -42,11 +42,10 @@ git-lfs` / `apt install git-lfs`, then `git lfs install` once per machine); in a
 clone made without it, run `git lfs pull`. Without the real files MuJoCo fails
 with a mesh parse error, because it gets LFS pointer files instead.
 
-The node API (`dora-rs`) is the **1.0.1** wheel from PyPI. The CLI is built
-from source at a commit pinned in `pyproject.toml`, because the repo layout
-depends on two module-resolution fixes that landed after the 1.0.1 release
-(dora-rs/dora#3350 and #3465). Building it needs Rust >= 1.95
-(`rustup update stable`); the first `uv sync` takes a few minutes.
+The node API (`dora-rs`) and the CLI (`dora-rs-cli`) are the **1.1.0** wheels
+from PyPI, pinned in `pyproject.toml`. 1.1.0 is the first release with the two
+module-resolution fixes the repo layout depends on (dora-rs/dora#3350 and
+#3465), so no Rust toolchain is needed.
 
 ```sh
 uv sync
@@ -75,7 +74,14 @@ uv run dora run   dataflows/tests/mujoco_web_rerun/mujoco_web_rerun.yml
 A UR10e with a Robotiq 2F-85 in MuJoCo. Open http://127.0.0.1:8000 to drive
 its joints and gripper; the rerun viewer shows both sim cameras, the robot in
 3D and one plot per part (measured vs commanded joints), and everything is
-recorded to `out/rrd/`.
+recorded to `out/rrd/`. `mujoco_web_rerun_depth` is the same with both cameras'
+depth images too (about 37 MB/s more in the recording).
+
+To replay a recording, open it with the robot model as an asset:
+
+```sh
+uv run --project nodes/rerun rerun --asset <out>/rrd/ur10e_2f85.model.rrd <out>/rrd/<recording>*.rrd
+```
 
 ## Architecture
 
@@ -85,13 +91,21 @@ recorded to `out/rrd/`.
   lock-in. Every data message is recommended to carry a captured
   `capture_time` in metadata so a consumer can align streams that arrive at
   different rates. (Not `timestamp`: dora already puts its own HLC send-time
-  there.)
-- **Producers (cameras, robot) are lightweight and never block the dora
-  loop.** Heavy or blocking work — camera capture, MuJoCo rendering — runs on
-  a background thread that keeps a latest-sample slot. The node publishes
-  that latest sample when its `tick` input from a `dora/timer` fires, once
-  per new sample (the slot is emptied when taken, so a fast tick only lowers
-  latency). See `opencv_camera`.
+  there.) `capture_time` is the wall clock of the machine that captured the
+  data, so streams are only comparable on one clock: for now everything a robot
+  program captures (the robot, its cameras) is assumed to run on one computer.
+  Splitting producers across machines needs their clocks synchronised (chrony,
+  PTP) first.
+- **Observations are aligned by capture time, on one observation clock.** A
+  `dora/timer` (e.g. 33 ms) ticks the producers and a `sync` node in `align`
+  mode. A producer that can capture on the tick does (the sim; later, triggered
+  cameras); one that cannot (a free-running webcam) sends each sample as it is
+  captured. Either way every sample carries its true `capture_time`, and the
+  aligner builds one observation per tick from every input's sample captured
+  nearest the tick. Delivery delays then cost latency, never alignment, and
+  each element's own `capture_time` is kept, so every offset can be checked.
+  Heavy or blocking work (camera capture, MuJoCo rendering) runs on a
+  background thread, so the dora loop stays responsive.
 - **A node opens its resources before it joins the dataflow.** The mode is
   built first (camera, recording, viewer) and only then `Node()` is created
   and handed to `mode.start(node)`. dora starts the timers once every node has
@@ -110,41 +124,40 @@ recorded to `out/rrd/`.
 ### Messaging formats
 
 Messages are flat Apache Arrow arrays; their metadata says what they are, so a
-consumer (the recorder, the web controller) needs no config or model to handle
+consumer (the recorder) needs no config or model to handle
 a stream it has never seen. Each node documents its own messages in its
 `README.md` under `nodes/<node name>/`; the shared keys are:
 
 | key | type | meaning |
 | --- | --- | --- |
 | `capture_time` | float | wall-clock seconds (`time.time()`) when the data was captured; not `timestamp`, dora owns that key |
-| `part` | str | the robot part a joint vector belongs to (`arm`, `gripper`, ...) |
 | `names` | list[str] | one label per value; for joint vectors the URDF joint names |
-| `lower` / `upper` | list[float] | joint limits, on `joint_state` |
-| `encoding`, `width`, `height` | str, int, int | images: `rgb8` (raveled H×W×3) or `jpeg`; depth: `uint16` millimetres |
-| `camera` | str | the camera's name |
-| `frame` | str | the URDF frame a calibrated camera is rigidly mounted on |
-| `extrinsics` | list[float] | `[x y z qx qy qz qw]`: the camera's optical frame (x right, y down, z forward) in `frame` |
-| `intrinsics` | list[float] | `[fx fy cx cy]` in pixels |
+| `encoding`, `width`, `height` | str, int, int | images: `rgb8` (raveled H×W×3) or `jpeg`; depth: `uint16` (millimetres) |
+| `camera` | str | on images and depth: the camera's name, as in the cell's calibration file |
 
 List values must be plain Python numbers: dora turns a list holding numpy scalars
 into its string form, without an error.
 
-What a stream is (an image, a joint state) is not written in its messages: the
-dataflow already fixes it, since an edge always carries the same stream. A node
-that takes one type on an input knows it from the input's role (the sim's
-`joint_target`); a node that takes several is told by its config (the recorder's
-`cameras`, `depth`, `joint_states`). Each stream type requires its keys; a
+Images and depth say what they are by their `encoding`, so a consumer like the
+recorder needs no config for them. Joint states and targets look alike (both
+named vectors), so a node that must tell them apart is told by its config (the
+recorder's `joint_states`). Each stream type requires its keys; a
 consumer may rely on them and fails loudly without them. A *named vector* is a
 flat numeric array whose `names` label every value (one name per value): joint
 states and targets are named vectors, and several of them can travel
 together as a `sync` tuple.
 
-| stream | payload | required metadata | optional metadata |
-| --- | --- | --- | --- |
-| image | `uint8[N]` | `encoding`, `width`, `height`, `capture_time` | `camera`; calibration: `frame`, `extrinsics`, `intrinsics` |
-| depth | `uint16[w*h]` millimetres | `width`, `height`, `capture_time` | |
-| joint state | `float64[n]` measured positions (a named vector) | `part`, `names`, `lower`, `upper` (n each), `capture_time` | |
-| joint target | `float64[n]` position setpoints (a named vector) | `names` (n), `capture_time` | `part` |
+| stream | payload | required metadata |
+| --- | --- | --- |
+| image | `uint8[N]` | `encoding`, `width`, `height`, `capture_time`; `camera` to find its calibration |
+| depth | `uint16[w*h]` millimetres | `encoding` (`uint16`), `width`, `height`, `capture_time`; `camera` |
+| joint state | `float64[n]` measured positions (a named vector) | `names` (n), `capture_time` |
+| joint target | `float64[n]` position setpoints (a named vector) | `names` (n), `capture_time` |
+
+Static facts about a stream stay out of its messages. A camera's calibration
+(its frame, extrinsics and intrinsics) is an input from the calibration
+process, a file per cell (`assets/<vendor>/<robot>/calibration/`), which a
+consumer reads by config and looks up by the message's `camera`.
 
 Consumers never parse meaning out of input or output ids: an id is just the
 name a dataflow wires. Robot streams are per *part* (a named
@@ -154,8 +167,7 @@ convention so dataflows read alike:
 | id | payload | direction |
 | --- | --- | --- |
 | `<part>_joint_state` | `float64[n]` measured joint positions | robot/sim → consumers |
-| `<part>_joint_target` | `float64[n]` joint position setpoint | controller → robot/sim, `queue_size: 1, queue_policy: drop_oldest` |
-| `joint_target` (a `sync` tuple) | one message holding several parts' targets: a struct of their arrays, their metadata as `<input id>.<key>` | `sync` → robot/sim: one input for the whole robot |
+| `joint_target` | joint position setpoints for any joints of the robot: a named vector (`names` says which), or a `sync` tuple of several producers' | controller → robot/sim, `queue_size: 1, queue_policy: drop_oldest`; one input for the whole robot |
 | `node_state` / `<name>_node_state` | `utf8[1]` token (`ready`, `finished`, `disconnect`) | every node → manager, edge-triggered |
 | `program_state` | `utf8[1]` (`boot`, `running`, `disconnect`) | manager → every node |
 
@@ -173,23 +185,27 @@ else that isn't covered by the MJCF and is required for robot control).
 > dora treats the directory of the dataflow file you run as the project root.
 > Node paths may leave it (`../../../nodes/<node>/…` from a program directory
 > works), but a `module:` path may not: it has to resolve inside the project
-> root, and since dora-rs/dora#3247 (fixed by #3350 and #3465, both in the
-> pinned CLI) an in-tree symlink counts as inside. So only programs that use
+> root, and since dora-rs/dora#3247 (fixed by #3350 and #3465, both in
+> 1.1.0) an in-tree symlink counts as inside. So only programs that use
 > shared modules carry a `modules -> ../../modules` symlink and reference
 > `modules/<subdir>/<module>.yml`. Node paths *inside* a module are relative to
 > the module file's physical directory (`../../nodes/<node>/…` from
 > `modules/<subdir>/`), so a module is written once and works from any program.
 
 ```
-assets/
+assets/                            # formats and how to make them: assets/README.md
   <robot family>/                  # e.g. universal_robots, trossen
     <robot name>/                  # e.g. ur10e (with a 2F-85), trossen_arm — a single arm
       meshes/                      # mesh files (STL/OBJ), in Git LFS (.gitattributes)
       schemas/                     # MJCF schemas using the meshes (and their generators)
-      scenes/                      # YAML scene descriptors: the controllable parts of a model
+      urdf/                        # the URDF and its meshes (and its generator)
+      scenes/                      # YAML scene files: the cell's URDF, calibration and simulation, for the nodes
+      calibration/                 # YAML camera calibration, one file per cell
     <robot name>/                  # e.g. trossen_stationary — meshes/ empty, schemas reuse the
                                    # single arm: two arms at a distance, correctly oriented
     <robot name>/                  # e.g. trossen_mobile — same reuse, different distance/orientation
+libs/                              # Python packages shared by nodes (uv path dependencies)
+  akai_scene/                      # the scene file format (a package the nodes depend on)
 .claude/skills/                    # agent skills; rerun-* are vendored from rerun (scripts/sync_rerun_skills.py)
 .agents/skills -> .claude/skills   # the same skills for Codex, Cursor and other agents
 scripts/                           # repo maintenance scripts
@@ -257,14 +273,14 @@ when all three are checked.
 | `manager` | State machine that collects `node_state` tokens and emits `program_state`. `simple` mode: `boot` → `running` → `disconnect`. | - | x | x |
 | `opencv_camera` | Publishes frames from an OpenCV capture (webcam or file) as `<name>_image` at the configured FPS, rgb8 or jpeg. | - | x | x |
 | `realsense-camera` | Intel RealSense color + optional depth. | - | - | - |
-| `pinocchio` | Whole-robot **IK + collision safety** (Pinocchio + Coal): consumes the `command` + `state` bundles, runs a synchronized whole-robot solve (self-collision + plane constraints), emits per-part `<part>_joint_target` + per-arm `measured/solution_pose` (model-frame FK). Generic, simulator-independent; reads the scene descriptor. | - | - | - |
-| `mujoco` | **MuJoCo** sim of a scene descriptor, in real time: per-part `<part>_joint_target` in, `<part>_joint_state` (with joint names + limits) and MJCF camera images out; physics and rendering on background threads. | - | x | - |
-| `sync` | Joins streams: one message (a *tuple*: an Arrow struct with a field per input, each holding that input's message and metadata untouched) the moment every input has a new message, no timer, warns on skew. For whole-robot commands (the web controller's per-part targets into the sim) and observations (cameras + state for a policy or recorder); dora has no built-in join. | - | x | x |
+| `pinocchio` | Whole-robot **IK + collision safety** (Pinocchio + Coal): consumes the `command` + `state` bundles, runs a synchronized whole-robot solve (self-collision + plane constraints), emits per-part `<part>_joint_target` + per-arm `measured/solution_pose` (model-frame FK). Generic, simulator-independent; reads the scene file. | - | - | - |
+| `mujoco` | **MuJoCo** sim of an MJCF, in real time: captures on the observation tick: `joint_target` in (a named vector), `<part>_joint_state` (URDF joint names) and MJCF camera images (built from the cell's calibration) out, all of one instant; physics and rendering on background threads. | - | x | - |
+| `sync` | Joins streams into one message, a *tuple* (an Arrow struct, a field per input; their metadata as `<input>.<key>`). `tuple` mode: the moment every input has a new message. `align` mode: per reference tick, every input's sample captured nearest it, for aligned observations (cameras + state for a policy or recorder). Dora has no built-in join. | - | x | x |
 | `trossen-robot` | The **real** Trossen robot, **one arm per node** (`NAME`+`IP`, `MODE`=follower/leader; `base` mode TODO for the `trossen-slate` mobile base): a follower streams per-part `joint_target` from pinocchio (joint control only); a leader publishes its hand-moved state. | - | - | - |
 | `ur5e-robot` | The **real** UR5e, **one arm per node** (`NAME`+`IP`): servoJ streaming of per-part `joint_target` with joint-jump guards; optional Robotiq gripper. | - | - | - |
 | `lerobot` | Records cameras + the `state` bundle + the `command` bundle into a `LeRobotDataset` (with video). | - | - | - |
 | `rerun` | One node, two modes: `record` writes every stream to an `.rrd` (cameras as H.264 video) and serves it live over gRPC (cameras as JPEG, ~6 ms behind capture), dispatching on message metadata: named joint plots per part, an optional URDF robot in 3D (`rerun.urdf.UrdfTree`) moved by joint states, cameras placed in it from a calibration file, its model written once as a shared asset and its forward kinematics as a layer; `visualize` opens a viewer on that server, locally or from another machine. | - | x | x |
-| `web_controller` | A web page (FastAPI + WebSocket, plain JS). `joint` mode: sliders and +/- per joint of every part it sees, closed-loop on `<part>_joint_state`, emits `<part>_joint_target`, Disconnect button. Planned: `cartesian` (needs pinocchio), `episode`. | - | x | - |
+| `web_controller` | A web page (FastAPI + WebSocket, plain JS). `joint` mode: sliders and +/- per joint of every part it sees, closed-loop on `<part>_joint_state`, emits one `joint_target` for all parts, Disconnect button. Planned: `cartesian` (needs pinocchio), `episode`. | - | x | - |
 
 ## Roadmap
 

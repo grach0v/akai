@@ -1,6 +1,6 @@
 # Scene file of the tabletop cell (format: assets/README.md): what the nodes need to know about
 # it. Paths are relative to this file. A node can be given any of this through its own config
-# instead. Check it: nodes/mujoco/.venv/bin/python nodes/mujoco/src/scene.py <this file>
+# instead.
 
 urdf: ../urdf/ur10e_2f85.urdf              # the kinematics: joint names and units of every message
 calibration: ../calibration/tabletop.yaml  # the cameras
