@@ -174,7 +174,8 @@
                   <geom class="visual" quat="1 0 0 0" material="linkgray" mesh="wrist3"/>
                   <geom class="eef_collision" size="0.046 0.02" pos="0 0.097 0" quat="0.707107 0.707107 0 0"/>
                   <site name="attachment_site" pos="0 0.1 0" quat="-0.707107 0.707107 0 0"/>
-                  <camera name="cam_wrist" quat="-0.788205 -0.615412 0 0" resolution="640 480" pos="0 0.1408 0.08" sensorsize="0.00192 0.00144" focalpixel="312.774 312.774"/>
+                  <site name="tool0" pos="0 0.1165 0" quat="-0.707107 0.707107 0 0"/>
+                  <camera name="cam_wrist" quat="-0.788205 -0.615412 0 0" resolution="640 480" pos="0 0.1573 0.08" sensorsize="0.00192 0.00144" focalpixel="312.774 312.774"/>
                   <frame pos="0 0.1 0" quat="-0.707107 0.707107 0 0">
                     <body name="2f85/base_mount" childclass="2f85/2f85" pos="0 0 0.007" gravcomp="1">
                       <geom class="2f85/visual" quat="1 0 0 0" material="2f85/black" mesh="2f85/base_mount"/>

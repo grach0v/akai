@@ -29,8 +29,9 @@ simulation, the URDF (from the vendors' own descriptions) is the kinematics.
 Joint states and targets on the wire use the URDF's names and units, and so do
 the MJCF's actuators (the generator names and scales them). Checked against
 each other: the arm joints have the same zeros and directions (the tool
-orientation agrees for every joint vector), the Menagerie arm's link lengths
-put its flange 1.6-1.7 cm from UR's, and the gripper fingertips agree within a
+orientation agrees for every joint vector), the arms agree within ~1 mm in
+every pose, the MJCF has a `tool0` site at UR's `tool0` (the Menagerie flange
+site sits 16.5 mm short of it; tool0 cameras mount on the site), and the gripper fingertips agree within a
 few mm across the stroke with the gripper actuator geared 0.725 / 0.8 (the
 URDF's `finger_joint` range over the Menagerie driver's).
 

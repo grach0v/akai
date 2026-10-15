@@ -28,10 +28,10 @@ robot changes:
 
 Checked against the MuJoCo model (`schemas/ur10e_2f85.xml`) when this was written: with the
 URDF's root `base_link` rotated 180 degrees about z onto the MJCF base, both give the same
-tool orientation for every joint vector (the joint zeros and directions agree), and the
-flange 1.6-1.7 cm apart (the Menagerie UR10e has slightly different link lengths than UR's
-own description). The gripper mount below puts the URDF fingertips within 2 mm of the MJCF
-pads, open and closed.
+tool orientation for every joint vector (the joint zeros and directions agree), and the arms
+agree within ~1 mm in every pose; only the menagerie's flange site sits 16.5 mm short of UR's
+`tool0` (the MJCF generator adds a `tool0` site there). The gripper mount below puts the URDF
+fingertips within 2 mm of the MJCF pads, open and closed.
 """
 
 from __future__ import annotations

@@ -356,13 +356,14 @@ class RecordMode:
         Every message: check its size against the calibration."""
         if stream not in self._images:
             self._images.append(stream)
-            if self._blueprint is None:
-                self._send_layout()  # with this camera
             cal = self._calibration.get(md.get("camera"))
             if cal is not None and not depth:
                 log_calibration([self.file, self.live], stream, cal)
                 self._calibrated_size[stream] = (cal.width, cal.height)
-            logger.info("record: %s (camera %s, %s)", stream, md.get("camera"), "3D" if stream in self._calibrated_size else "2D")
+            if self._blueprint is None:
+                self._send_layout()  # with this camera, in 3D when calibrated
+            in_3d = "3D" if stream in self._calibrated_size else "2D"
+            logger.info("record: %s (camera %s, %s)", stream, md.get("camera"), in_3d)
         size = self._calibrated_size.get(stream)
         if size is not None and size != (md["width"], md["height"]):
             raise ValueError(

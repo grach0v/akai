@@ -31,7 +31,8 @@ What it changes on top of the plain attach, so every node can treat the model un
   instead of sagging to a torque-balanced offset.
 * a floor, a table the arm stands on, lights, and the cell's cameras, built from its
   calibration file (`../calibration/tabletop.yaml`): each camera is mounted where its
-  extrinsics say, on the MJCF element of its URDF frame (`urdf_frames`), with its exact
+  extrinsics say, on the MJCF element of its URDF frame (`urdf_frames`; a `tool0` site is
+  added at UR's `tool0`, 16.5 mm beyond the menagerie flange site), with its exact
   pinhole intrinsics, so the simulated cameras match their calibration by construction.
 * one `home` keyframe for the whole model (a ready pose over the table, gripper open), with
   ctrl equal to the joint positions so the servos start at rest.
@@ -75,12 +76,15 @@ class CellConfig(BaseSettings):
     gripper_gear: float = 0.725 / 0.8
     # The cell's camera calibration, relative to the robot directory (the parent of schemas/).
     calibration: Path = Path("calibration/tabletop.yaml")
+    # UR's `tool0` lies this far beyond the menagerie flange site along the tool axis (measured:
+    # the arms otherwise agree within ~1 mm in every pose). A `tool0` site is added there.
+    tool0_offset: float = 0.0165
     # Where each URDF frame a camera may be mounted on is in the MJCF: a body, or a site.
     # Checked: the URDF root `world` is the MJCF arm base (the base body's Rz(pi) is ROS's
-    # base_link convention), and `tool0` is the flange site, orientation for orientation.
+    # base_link convention).
     urdf_frames: dict[str, tuple[Literal["body", "site"], str]] = {
         "world": ("body", "base"),
-        "tool0": ("site", "attachment_site"),
+        "tool0": ("site", "tool0"),
     }
     # Largest offscreen render the model allows (a renderer's width/height must fit).
     offscreen_size: tuple[int, int] = (1280, 960)
@@ -177,6 +181,13 @@ def build(cfg: CellConfig, here: Path) -> tuple[str, mujoco.MjModel]:
     for body in spec.bodies:
         if body.name and body.name != "world":
             body.gravcomp = 1.0
+
+    # UR's `tool0`: the flange site, moved out along its z by the measured offset.
+    flange = spec.site("attachment_site")
+    quat = np.array(flange.quat) / np.linalg.norm(flange.quat)  # MjSpec keeps it unnormalized
+    offset = np.zeros(3)
+    mujoco.mju_rotVecQuat(offset, np.array([0.0, 0.0, cfg.tool0_offset]), quat)
+    flange.parent.add_site(name="tool0", pos=list(np.array(flange.pos) + offset), quat=list(flange.quat))
 
     calibration = yaml.safe_load((here.parent / cfg.calibration).read_text())
     for name, cal in calibration["cameras"].items():
