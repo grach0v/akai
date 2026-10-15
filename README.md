@@ -167,7 +167,7 @@ convention so dataflows read alike:
 | id | payload | direction |
 | --- | --- | --- |
 | `<part>_joint_state` | `float64[n]` measured joint positions | robot/sim → consumers |
-| `joint_target` | joint position setpoints for any joints of the robot: a named vector (`names` says which), or a `sync` tuple of several producers' | controller → robot/sim, `queue_size: 1, queue_policy: drop_oldest`; one input for the whole robot |
+| `joint_target` | joint position setpoints for any joints of the robot: a named vector (`names` says which) | controller → robot/sim, `queue_size: 1, queue_policy: drop_oldest`; one input for the whole robot |
 | `node_state` / `<name>_node_state` | `utf8[1]` token (`ready`, `finished`, `disconnect`) | every node → manager, edge-triggered |
 | `program_state` | `utf8[1]` (`boot`, `running`, `disconnect`) | manager → every node |
 

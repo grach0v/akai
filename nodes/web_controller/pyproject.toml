@@ -1,0 +1,30 @@
+# web_controller node — a browser page to drive a robot and follow the program.
+#
+# Not a package: `src/main.py` runs as a plain script under this venv:
+#   build: uv sync --project ../../nodes/web_controller
+#   path:  ../../nodes/web_controller/.venv/bin/python
+#   args:  ../../nodes/web_controller/src/main.py
+[project]
+name = "web-controller"
+version = "0.1.0"
+description = "Dora node serving a web page that drives robot parts in joint space."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "akai_scene",
+    "dora-rs==1.1.0",
+    "fastapi>=0.115",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+    "uvicorn[standard]>=0.32",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+akai_scene = { path = "../../libs/akai_scene", editable = true }   # the scene file format
+
+[tool.ruff]
+line-length = 110
+src = ["src"]

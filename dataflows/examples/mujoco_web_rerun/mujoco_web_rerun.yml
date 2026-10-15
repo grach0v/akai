@@ -1,0 +1,135 @@
+# A simulated UR10e + 2F-85 driven in joint space from a web page, recorded to
+# .rrd and shown live, with the manager owning the lifecycle.
+#
+#   web    --> joint_target (both parts' targets, one message) --> sim
+#   sim    --> arm_joint_state, gripper_joint_state   --> web (closes the loop)
+#   dora/timer/millis/33: the observation clock, ticking the sim and the observation aligner
+#   sim    --> both camera images + both joint states --> observation (sync, align): per tick,
+#          every input's sample captured nearest the tick, one aligned tuple
+#   observation   --> observation                     --> rerun_record (one row per observation)
+#   web    --> joint_target                           --> rerun_record (commanded vs measured)
+#   rerun_record  --> out/rrd/<app_id>_<time>.rrd  +  gRPC server :9876 (live)
+#   rerun_viewer  --> a rerun viewer on that server: cameras, the 3D robot, one plot per part
+#   manager       <-- every node's node_state; --> program_state --> every node
+#
+# Open http://127.0.0.1:8000 once the program is `running` and move the sliders.
+# The program ends (`disconnect`) on Ctrl-C, on the page's Disconnect button, or
+# when the operator closes the viewer window.
+#
+#   build: uv run dora build dataflows/tests/mujoco_web_rerun/mujoco_web_rerun.yml
+#   run:   uv run dora run   dataflows/tests/mujoco_web_rerun/mujoco_web_rerun.yml
+#
+# Headless Linux: add MUJOCO_GL: "egl" to the sim's env (macOS renders with CGL as is).
+# Node and asset paths are relative to this file's directory.
+
+nodes:
+  - id: manager
+    build: uv sync --project ../../../nodes/manager
+    path: ../../../nodes/manager/.venv/bin/python
+    args: ../../../nodes/manager/src/main.py
+    inputs:
+      sim: sim/node_state
+      web: web/node_state
+      observation: observation/node_state
+      rerun_record: rerun_record/node_state
+      rerun_viewer: rerun_viewer/node_state
+    outputs: [program_state]
+    env:
+      MODE__NAME: "simple"
+      MODE__PRODUCERS: '["sim", "web", "observation", "rerun_record", "rerun_viewer"]'
+
+  - id: sim
+    build: uv sync --project ../../../nodes/mujoco
+    path: ../../../nodes/mujoco/.venv/bin/python
+    args: ../../../nodes/mujoco/src/main.py
+    inputs:
+      # the observation clock: every tick the sim snapshots itself, renders, and sends joint states
+      # and frames of that one instant, as triggered cameras and a robot would
+      tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
+      program_state: manager/program_state
+      joint_target: { source: web/joint_target, queue_size: 1, queue_policy: drop_oldest }
+    outputs: [arm_joint_state, gripper_joint_state, cam_overhead_image, cam_wrist_image, node_state]
+    env:
+      SCENE: "../../../assets/universal_robots/ur10e/scenes/tabletop.yaml"
+      MODE__NAME: "sim"
+      MODE__CAMERAS: '["cam_overhead", "cam_wrist"]'
+      MODE__WIDTH: "640"
+      MODE__HEIGHT: "480"
+      MODE__ENCODING: "jpeg"
+      MODE__JPEG_QUALITY: "80"
+      MODE__RENDER_FLAGS: '{"SHADOW": false, "REFLECTION": false, "SKYBOX": false, "FOG": false, "HAZE": false}'
+
+  - id: web
+    build: uv sync --project ../../../nodes/web_controller
+    path: ../../../nodes/web_controller/.venv/bin/python
+    args: ../../../nodes/web_controller/src/main.py
+    inputs:
+      tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
+      program_state: manager/program_state
+      arm_joint_state: { source: sim/arm_joint_state, queue_size: 1, queue_policy: drop_oldest }
+      gripper_joint_state: { source: sim/gripper_joint_state, queue_size: 1, queue_policy: drop_oldest }
+    outputs: [joint_target, node_state]
+    env:
+      HOST: "127.0.0.1"
+      PORT: "8000"
+      MODE__NAME: "joint"
+      MODE__SCENE: "../../../assets/universal_robots/ur10e/scenes/tabletop.yaml"   # the URDF: slider ranges
+
+  - id: observation
+    build: uv sync --project ../../../nodes/sync
+    path: ../../../nodes/sync/.venv/bin/python
+    args: ../../../nodes/sync/src/main.py
+    inputs:  # deep queues: the aligner picks by capture time, so it needs every sample
+      program_state: manager/program_state
+      tick: dora/timer/millis/33   # the observation clock, the same timer the sim ticks on
+      cam_overhead_image: { source: sim/cam_overhead_image, queue_size: 100 }
+      cam_wrist_image: { source: sim/cam_wrist_image, queue_size: 100 }
+      arm_joint_state: { source: sim/arm_joint_state, queue_size: 100 }
+      gripper_joint_state: { source: sim/gripper_joint_state, queue_size: 100 }
+    outputs: [observation, node_state]
+    env:
+      MODE__NAME: "align"
+      MODE__REFERENCE: "tick"
+      MODE__INPUTS: '["cam_overhead_image", "cam_wrist_image", "arm_joint_state", "gripper_joint_state"]'
+      MODE__INPUT_TIME: "capture_time"   # when each sample was taken, not when it was sent (a tick later)
+      MODE__OUTPUT: "observation"
+      MODE__MAX_SKEW: "0.02"   # the sim captures everything on the tick: more means it lags
+
+  - id: rerun_record
+    build: uv sync --project ../../../nodes/rerun
+    path: ../../../nodes/rerun/.venv/bin/python
+    args: ../../../nodes/rerun/src/main.py
+    inputs:  # deep queues: a recorder keeps every message, even while it starts up
+      program_state: manager/program_state
+      observation: { source: observation/observation, queue_size: 1000 }   # cameras + joint states, aligned
+      joint_target: { source: web/joint_target, queue_size: 1000 }   # what the sim is commanded
+    outputs: [node_state]
+    env:
+      MODE__NAME: "record"
+      MODE__GRPC_PORT: "9876"
+      MODE__INPUT_TIME: "capture_time"   # producers stamp it: log when the data was taken, not sent
+      MODE__VIDEO_FPS: "30"
+      MODE__JOINT_STATES: '["observation/arm_joint_state", "observation/gripper_joint_state"]'
+      # one plot per joint: measured (the observation) next to commanded (the web controller)
+      MODE__PLOTS: >-
+        {"shoulder_pan": ["observation/arm_joint_state/shoulder_pan_joint", "joint_target/shoulder_pan_joint"],
+        "shoulder_lift": ["observation/arm_joint_state/shoulder_lift_joint", "joint_target/shoulder_lift_joint"],
+        "elbow": ["observation/arm_joint_state/elbow_joint", "joint_target/elbow_joint"],
+        "wrist_1": ["observation/arm_joint_state/wrist_1_joint", "joint_target/wrist_1_joint"],
+        "wrist_2": ["observation/arm_joint_state/wrist_2_joint", "joint_target/wrist_2_joint"],
+        "wrist_3": ["observation/arm_joint_state/wrist_3_joint", "joint_target/wrist_3_joint"],
+        "finger": ["observation/gripper_joint_state/finger_joint", "joint_target/finger_joint"]}
+      # the cell: its URDF (the 3D robot) and camera calibration (images name their `camera`)
+      MODE__SCENE: "../../../assets/universal_robots/ur10e/scenes/tabletop.yaml"
+
+  - id: rerun_viewer
+    build: uv sync --project ../../../nodes/rerun
+    path: ../../../nodes/rerun/.venv/bin/python
+    args: ../../../nodes/rerun/src/main.py
+    inputs:
+      tick: { source: dora/timer/millis/500, queue_size: 1, queue_policy: drop_oldest }  # to notice a closed viewer window
+      program_state: manager/program_state
+    outputs: [node_state]
+    env:
+      MODE__NAME: "visualize"
+      MODE__SERVER_URL: "rerun+http://127.0.0.1:9876/proxy"

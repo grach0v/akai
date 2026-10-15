@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Joint control</title>
+<style>
+  :root {
+    --bg: #f5f5f4; --card: #ffffff; --text: #1c1917; --muted: #78716c; --line: #e7e5e4;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --track: #d6d3d1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1917; --card: #292524; --text: #f5f5f4; --muted: #a8a29e; --line: #44403c;
+      --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --track: #57534e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+           padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--card);
+           position: sticky; top: 0; z-index: 1; }
+  h1 { font-size: 16px; margin: 0; }
+  .badges { display: flex; gap: 8px; align-items: center; }
+  .badge { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+           font-size: 12px; }
+  .badge.running { color: var(--ok); border-color: var(--ok); }
+  .badge.boot { color: var(--warn); border-color: var(--warn); }
+  .badge.disconnect, .badge.offline { color: var(--bad); border-color: var(--bad); }
+  .actions { display: flex; gap: 8px; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  main { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+         max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 480px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 8px; }
+  .row { display: grid; grid-template-columns: minmax(90px, 1.2fr) 64px minmax(120px, 3fr) auto 64px;
+         gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; }
+  .name { overflow-wrap: anywhere; font-size: 13px; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; font-size: 13px; }
+  .measured { color: var(--muted); }
+  .head { color: var(--muted); font-size: 12px; border-top: 0; padding: 0 0 4px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .pm { display: flex; gap: 4px; }
+  .pm button { padding: 2px 10px; }
+  .empty { color: var(--muted); padding: 32px 16px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Joint control</h1>
+  <div class="badges">
+    <span id="link" class="badge offline">offline</span>
+    <span id="program" class="badge">program: –</span>
+  </div>
+  <div class="actions">
+    <button id="sync" title="Set every target to the measured position">Sync to measured</button>
+    <button id="disconnect" class="danger">Disconnect</button>
+  </div>
+</header>
+<main id="parts"><div class="empty">Waiting for joint states…</div></main>
+<script>
+"use strict";
+const partsEl = document.getElementById("parts");
+const linkEl = document.getElementById("link");
+const programEl = document.getElementById("program");
+let socket = null;
+let layout = "";           // parts + joint names the DOM was built for
+let dragging = null;       // slider being dragged: its target is not overwritten by pushes
+let step = 0.02;
+
+function send(msg) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
+}
+
+function fmt(v) { return v.toFixed(3); }
+
+function build(parts) {
+  partsEl.replaceChildren();
+  const names = Object.keys(parts);
+  if (names.length === 0) {
+    partsEl.innerHTML = '<div class="empty">Waiting for joint states…</div>';
+    return;
+  }
+  for (const part of names) {
+    const p = parts[part];
+    const card = document.createElement("section");
+    card.className = "card";
+    card.innerHTML = `<h2>${part}</h2>
+      <div class="row head"><span>joint</span><span class="num">measured</span><span>target</span>
+      <span></span><span class="num">target</span></div>`;
+    p.names.forEach((joint, i) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `<span class="name">${joint}</span>
+        <span class="num measured" data-measured></span>
+        <input type="range" min="${p.lower[i]}" max="${p.upper[i]}" step="any" aria-label="${joint} target">
+        <span class="pm"><button data-dir="-1" aria-label="${joint} minus">−</button>
+        <button data-dir="1" aria-label="${joint} plus">+</button></span>
+        <span class="num" data-target></span>`;
+      const slider = row.querySelector("input");
+      slider.dataset.part = part;
+      slider.dataset.index = i;
+      slider.addEventListener("pointerdown", () => { dragging = slider; });
+      const release = () => { if (dragging === slider) dragging = null; };
+      slider.addEventListener("pointerup", release);
+      slider.addEventListener("pointercancel", release);
+      slider.addEventListener("input", () =>
+        send({ type: "set", part, index: i, value: parseFloat(slider.value) }));
+      row.querySelectorAll("button").forEach((b) =>
+        b.addEventListener("click", () => send({ type: "nudge", part, index: i, dir: Number(b.dataset.dir) })));
+      card.appendChild(row);
+    });
+    partsEl.appendChild(card);
+  }
+}
+
+function render(snap) {
+  step = snap.step;
+  const program = snap.program_state || "–";
+  programEl.textContent = `program: ${program}`;
+  programEl.className = `badge ${program}`;
+  const key = JSON.stringify(Object.entries(snap.parts).map(([k, p]) => [k, p.names]));
+  if (key !== layout) { build(snap.parts); layout = key; }
+  for (const card of partsEl.querySelectorAll(".card")) {
+    for (const row of card.querySelectorAll(".row:not(.head)")) {
+      const slider = row.querySelector("input");
+      const p = snap.parts[slider.dataset.part];
+      const i = Number(slider.dataset.index);
+      row.querySelector("[data-measured]").textContent = fmt(p.measured[i]);
+      row.querySelector("[data-target]").textContent = fmt(p.target[i]);
+      if (slider !== dragging) slider.value = p.target[i];
+    }
+  }
+}
+
+function connect() {
+  socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  socket.onopen = () => { linkEl.textContent = "connected"; linkEl.className = "badge running"; };
+  socket.onmessage = (e) => render(JSON.parse(e.data));
+  socket.onclose = () => {
+    linkEl.textContent = "offline"; linkEl.className = "badge offline";
+    setTimeout(connect, 1000);
+  };
+}
+
+document.getElementById("sync").addEventListener("click", () => send({ type: "sync" }));
+document.getElementById("disconnect").addEventListener("click", () => {
+  if (confirm("Disconnect ends the program for every node. Continue?")) send({ type: "disconnect" });
+});
+connect();
+</script>
+</body>
+</html>

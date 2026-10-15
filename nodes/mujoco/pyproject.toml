@@ -1,0 +1,31 @@
+# mujoco node — MuJoCo simulation of a robot scene (physics + offscreen cameras).
+#
+# Not a package: `src/main.py` runs as a plain script under this venv:
+#   build: uv sync --project ../../nodes/mujoco
+#   path:  ../../nodes/mujoco/.venv/bin/python
+#   args:  ../../nodes/mujoco/src/main.py
+[project]
+name = "mujoco-node"
+version = "0.1.0"
+description = "Dora node simulating a robot cell in MuJoCo: joint targets in, joint states and camera images out, captured on a tick."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "akai_scene",
+    "dora-rs==1.1.0",
+    "mujoco>=3.3",
+    "numpy",
+    "pillow",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+akai_scene = { path = "../../libs/akai_scene", editable = true }   # the scene file format
+
+[tool.ruff]
+line-length = 110
+src = ["src"]
