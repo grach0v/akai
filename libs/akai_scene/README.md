@@ -20,8 +20,7 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
 | --- | --- |
 | `load_scene(path) -> Scene` | read and validate a scene file: unknown keys, lists of the wrong length and files that do not exist are errors; paths come back relative to the working directory |
 | `Scene` | `urdf`, `calibration` (paths, or None) and `mujoco` (a `MujocoScene`, or None) |
-| `MujocoScene` | `model` (the MJCF path) and `parts` (name -> `PartSpec`) |
-| `PartSpec` | one part: `joints`, `actuators`, `urdf_joints`, `urdf_scale`, and the defaults applied: `actuator_names`, `urdf_names`, `scale` |
+| `MujocoScene` | `model` (the MJCF path) and `parts` (name -> its MJCF actuators, named and scaled like the URDF joints they drive) |
 | `load_calibration(path) -> dict[str, CameraCalibration]` | read and validate a calibration file: its cameras by name (`frame`, `extrinsics`, `intrinsics`, `width`, `height`, `depth`) |
 | `one_of(option, explicit, scene, from_scene)` | a value from the config or from the scene file: raises if both give it, None if neither does |
 
@@ -69,17 +68,15 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
 3. The rest of the node only reads its config fields (`opts.robot_urdf`, ...)
    and never knows whether they came from a scene file.
 
-Parts work the same way: the `mujoco` node has `MODEL` and `PARTS` fields, and
-`PARTS` uses the `PartSpec` type, so parts given in the config are validated
-exactly like parts in a scene file:
+Parts work the same way: the `mujoco` node has `MODEL` and `PARTS` fields:
 
 ```python
-from akai_scene import PartSpec, load_scene, one_of
+from akai_scene import load_scene, one_of
 
 class MujocoConfig(BaseSettings):
     scene: Path | None = None                    # SCENE
     model: Path | None = None                    # MODEL
-    parts: dict[str, PartSpec] | None = None     # PARTS (JSON)
+    parts: dict[str, list[str]] | None = None    # PARTS (JSON)
 
     @model_validator(mode="after")
     def _from_scene(self):
@@ -102,10 +99,9 @@ cell as `assets/universal_robots/ur10e/scenes/tabletop.yaml`, by hand:
     env:
       MODEL: "../../../assets/universal_robots/ur10e/schemas/ur10e_2f85.xml"
       PARTS: >-
-        {"arm": {"joints": ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
-                            "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"]},
-         "gripper": {"joints": ["2f85/right_driver_joint"], "actuators": ["gripper"],
-                     "urdf_joints": ["finger_joint"], "urdf_scale": [0.90625]}}
+        {"arm": ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                 "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"],
+         "gripper": ["finger_joint"]}
 
   - id: web
     env:

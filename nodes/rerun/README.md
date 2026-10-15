@@ -101,8 +101,8 @@ plus a shared asset:
 
 The live viewer gets all three. Every message on a `MODE__JOINT_STATES` input is turned into
 transforms, on the same timelines as its scalars, for the joints its `names` metadata lists, which must be the URDF's
-joint names (a producer maps its own onto them: the sim through its parts'
-`urdf_joints` / `urdf_scale`). A joint the URDF does not have is
+joint names (a producer maps its own onto them; the sim's MJCF actuators already
+use them). A joint the URDF does not have is
 skipped with one warning. Mimic joints, which a gripper reports only through its
 driver, get `driver * multiplier + offset` as the URDF declares; the
 transforms' parent and child frames are the URDF link names, the same the model

@@ -13,8 +13,8 @@ Follows the `rerun-urdf` skill:
   so the recorder keeps them in their own layer (`<recording>.fk.rrd`).
 
 Joint states carry URDF joint names (metadata `names`), so the mapping from a producer's
-joints to the URDF is the producer's (for the sim: its parts' `urdf_joints` /
-`urdf_scale`). Mimic joints, which a gripper reports only through its driver, get their
+joints to the URDF is the producer's (the sim's MJCF actuators already use URDF names
+and units). Mimic joints, which a gripper reports only through its driver, get their
 value here as the URDF says: `driver * multiplier + offset`.
 """
 

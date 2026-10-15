@@ -75,14 +75,9 @@ calibration: ../calibration/tabletop.yaml  # the cameras
 mujoco:                                    # the simulation
   model: ../schemas/ur10e_2f85.xml
   parts:                                   # by name; part <p> goes out as <p>_joint_state
-    arm:
-      joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint,
-               wrist_1_joint, wrist_2_joint, wrist_3_joint]
-    gripper:
-      joints: [2f85/right_driver_joint]
-      actuators: [gripper]
-      urdf_joints: [finger_joint]
-      urdf_scale: [0.90625]
+    arm: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint,
+          wrist_1_joint, wrist_2_joint, wrist_3_joint]
+    gripper: [finger_joint]
 ```
 
 | key | meaning |
@@ -90,18 +85,16 @@ mujoco:                                    # the simulation
 | `urdf` | the robot's URDF |
 | `calibration` | the cell's calibration file |
 | `mujoco.model` | the MJCF |
-| `mujoco.parts.<p>.joints` | MJCF joint names, in the order the part's vectors list them (required per part) |
-| `mujoco.parts.<p>.actuators` | MJCF actuators driving them, one per joint; default: named after the joints |
-| `mujoco.parts.<p>.urdf_joints` | the joints' URDF names; default: the MJCF names |
-| `mujoco.parts.<p>.urdf_scale` | URDF value = MJCF value × scale, per joint; default: 1 |
+| `mujoco.parts.<p>` | the part's MJCF actuators, in the order its vectors list them |
 
-The `mujoco` node takes `parts` in the same format through its own config
-(`PARTS`, as JSON). To fill in a part's URDF mapping, compare each MJCF joint
-with its URDF counterpart: same name, zero and direction need nothing; a
-different name needs `urdf_joints`; a different unit or range needs
-`urdf_scale`, e.g. the ratio of the two joint ranges. Unknown keys, a list of the
-wrong length and a file that does not exist are errors when a node reads the
-scene file, and a name the MJCF does not have when the sim starts.
+The MJCF's actuators are the robot's interface: each is named after the URDF
+joint it drives, its ctrl and length in that joint's units, so a part needs no
+mapping. Where the MJCF's own joints differ from the URDF's, the generator that
+builds it adapts the actuator (the 2F-85's is geared from its driver angle to
+the URDF's `finger_joint`). The `mujoco` node takes `parts` in the same format
+through its own config (`PARTS`, as JSON). Unknown keys and a file that does
+not exist are errors when a node reads the scene file, and a name the MJCF does
+not have when the sim starts.
 
 ## The calibration file
 

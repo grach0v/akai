@@ -21,12 +21,12 @@ CLI flag (`--table_top_z 0.8`) and a `CELL_` env var, so a variant needs no code
 
 What it changes on top of the plain attach, so every node can treat the model uniformly:
 
-* every joint actuator is renamed to its joint (`shoulder_pan` -> `shoulder_pan_joint`);
-  a node finds an arm part's actuators by its joint names.
-* the 2F-85 `fingers_actuator` (ctrl 0..255) is rescaled to a position servo in driver-joint
-  radians (ctrl 0..0.8, 0 = open) and renamed `gripper`, so gripper command, state and ctrl
-  share one unit. The transmission stays the menagerie's `split` tendon, which with the
-  driver-joint equality equals the driver angle.
+* every actuator speaks the URDF: named after the URDF joint it drives, its ctrl and length in
+  that joint's units. The arm's are renamed to their joints (`shoulder_pan` ->
+  `shoulder_pan_joint`). The 2F-85 `fingers_actuator` (ctrl 0..255) becomes a position servo
+  named `finger_joint`, geared from the driver angle (menagerie 0..0.8 rad) to the URDF's
+  `finger_joint` (0..0.725 rad), with gains and force range scaled so the servo acts as before.
+  Its transmission stays the menagerie's `split` tendon, which equals the driver angle.
 * gravity compensation on every robot body, so the position servos hold their pose
   instead of sagging to a torque-balanced offset.
 * a floor, a table the arm stands on, lights, and the cell's cameras, built from its
@@ -66,11 +66,13 @@ class CellConfig(BaseSettings):
         "wrist_2_joint": -1.5708,
         "wrist_3_joint": -1.8418,
     }
-    # Gripper position servo on the driver joint: its gains (the menagerie's, now in radians)
-    # and range (0 = open, 0.8 rad = closed). `home` opens it.
+    # Gripper position servo on the driver joint: its gains and range in driver radians (the
+    # menagerie's; 0 = open, 0.8 = closed), and the URDF `finger_joint` angle per driver radian
+    # (its range 0..0.725 over the same stroke). `home` opens it.
     gripper_kp: float = 100.0
     gripper_kv: float = 10.0
     gripper_range: tuple[float, float] = (0.0, 0.8)
+    gripper_gear: float = 0.725 / 0.8
     # The cell's camera calibration, relative to the robot directory (the parent of schemas/).
     calibration: Path = Path("calibration/tabletop.yaml")
     # Where each URDF frame a camera may be mounted on is in the MJCF: a body, or a site.
@@ -156,12 +158,17 @@ def build(cfg: CellConfig, here: Path) -> tuple[str, mujoco.MjModel]:
     spec.body("base").pos = [0, 0, top]
     spec.attach(grip, site=spec.site("attachment_site"), prefix="2f85/")
 
-    # Gripper: position servo in driver-joint radians, same tendon transmission.
+    # Gripper: position servo in URDF `finger_joint` radians, same tendon transmission. The gear g
+    # makes length and ctrl g x the driver angle; dividing kp, kv by g^2 and the force range by
+    # g keeps the servo's torque on the driver what it was.
+    g = cfg.gripper_gear
     gripper = spec.actuator("2f85/fingers_actuator")
-    gripper.name = "gripper"
-    gripper.ctrlrange = list(cfg.gripper_range)
-    gripper.gainprm = [cfg.gripper_kp] + [0.0] * 9
-    gripper.biasprm = [0.0, -cfg.gripper_kp, -cfg.gripper_kv] + [0.0] * 7
+    gripper.name = "finger_joint"
+    gripper.gear = [g, 0, 0, 0, 0, 0]
+    gripper.ctrlrange = [r * g for r in cfg.gripper_range]
+    gripper.forcerange = [f / g for f in gripper.forcerange]
+    gripper.gainprm = [cfg.gripper_kp / g**2] + [0.0] * 9
+    gripper.biasprm = [0.0, -cfg.gripper_kp / g**2, -cfg.gripper_kv / g**2] + [0.0] * 7
     # Every joint actuator (the arm's) named after its joint.
     for act in spec.actuators:
         if act.trntype == mujoco.mjtTrn.mjTRN_JOINT:
@@ -187,7 +194,7 @@ def build(cfg: CellConfig, here: Path) -> tuple[str, mujoco.MjModel]:
     for a in range(model.nu):
         if model.actuator_trntype[a] == mujoco.mjtTrn.mjTRN_JOINT:
             ctrl[a] = qpos[model.jnt_qposadr[model.actuator_trnid[a][0]]]
-    ctrl[model.actuator("gripper").id] = cfg.gripper_range[0]
+    ctrl[model.actuator("finger_joint").id] = cfg.gripper_range[0] * cfg.gripper_gear
     spec.add_key(name="home", qpos=qpos.tolist(), ctrl=ctrl.tolist())
 
     model = spec.compile()

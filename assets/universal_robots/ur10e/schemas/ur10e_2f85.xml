@@ -291,7 +291,7 @@
     <general name="wrist_1_joint" class="size2" joint="wrist_1_joint"/>
     <general name="wrist_2_joint" class="size2" joint="wrist_2_joint"/>
     <general name="wrist_3_joint" class="size2" joint="wrist_3_joint"/>
-    <general name="gripper" class="2f85/2f85" tendon="2f85/split" ctrlrange="0 0.8" forcerange="-5 5" gainprm="100" biasprm="0 -100 -10"/>
+    <general name="finger_joint" class="2f85/2f85" tendon="2f85/split" ctrlrange="0 0.725" forcerange="-5.51724 5.51724" gear="0.90625" gainprm="121.76" biasprm="0 -121.76 -12.176"/>
   </actuator>
 
   <keyframe>

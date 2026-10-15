@@ -5,16 +5,8 @@
 urdf: ../urdf/ur10e_2f85.urdf              # the kinematics: joint names and units of every message
 calibration: ../calibration/tabletop.yaml  # the cameras
 
-mujoco:  # the simulation: the MJCF, and which of its joints form each controllable part
+mujoco:  # the simulation: the MJCF, and the actuators of each controllable part
   model: ../schemas/ur10e_2f85.xml
-  parts:
-    arm:  # one actuator per joint, named after it; the MJCF and the URDF name and define these alike
-      joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint,
-               wrist_1_joint, wrist_2_joint, wrist_3_joint]
-    gripper:  # the 2F-85's driver joint; the rest of its linkage follows it
-      joints: [2f85/right_driver_joint]
-      actuators: [gripper]
-      # The URDF's finger_joint drives its linkage (mimic joints) over 0-0.725 rad where the
-      # MJCF driver spans 0-0.8; the fingertips agree within a few mm across the range.
-      urdf_joints: [finger_joint]
-      urdf_scale: [0.90625]
+  parts:  # every MJCF actuator is named after the URDF joint it drives, in that joint's units
+    arm: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]
+    gripper: [finger_joint]  # the 2F-85's driver; the rest of its linkage follows it
