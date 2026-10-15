@@ -1,6 +1,6 @@
 # rerun
 
-The [rerun](https://rerun.io) node (rerun-sdk 0.38.1), with two modes selected
+The [rerun](https://rerun.io) node (rerun-sdk 0.39.0), with two modes selected
 by `MODE__NAME`:
 
 - **`record`** writes every incoming stream to an `.rrd` file **and** serves
@@ -22,7 +22,7 @@ the SDK's `import rerun`.
 ## Layout
 
 ```
-pyproject.toml         # uv project: dora-rs, rerun-sdk==0.38.1, av (H.264), pydantic-settings
+pyproject.toml         # uv project: dora-rs, rerun-sdk==0.39.0, av (H.264), pydantic-settings
 src/config.py          # RerunConfig: node fields + `mode`, one config class per mode picked by MODE__NAME
 src/main.py            # dora skeleton, identical in every node: config -> mode -> Node -> loop
 src/robot.py           # a URDF shown in 3D, moved by joint states (record mode, rerun.urdf.UrdfTree)

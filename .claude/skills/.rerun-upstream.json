@@ -1,0 +1,19 @@
+{
+  "source": "https://github.com/rerun-io/rerun/tree/0.39.0/skills",
+  "tag": "0.39.0",
+  "commit": "da3164fcb09437b5b32375460a8626cd3f960ddd",
+  "skills": [
+    "rerun-blueprint",
+    "rerun-catalog-queries",
+    "rerun-chunk-processing",
+    "rerun-data-model",
+    "rerun-dataset-conversion",
+    "rerun-docs",
+    "rerun-lerobot",
+    "rerun-mcap",
+    "rerun-mp4",
+    "rerun-parquet",
+    "rerun-urdf"
+  ],
+  "note": "Vendored by scripts/sync_rerun_skills.py; do not edit these skills here."
+}

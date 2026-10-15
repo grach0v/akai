@@ -7,21 +7,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "akai-scene"
-version = "0.1.0"
-source = { editable = "../../libs/scene" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pydantic", specifier = ">=2.6" },
-    { name = "pyyaml" },
-]
-
-[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -603,32 +588,28 @@ name = "rerun-node"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "akai-scene" },
     { name = "av" },
     { name = "dora-rs" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pyarrow" },
     { name = "pydantic-settings" },
-    { name = "pyyaml" },
     { name = "rerun-sdk" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "akai-scene", editable = "../../libs/scene" },
     { name = "av", specifier = ">=18.1.0" },
     { name = "dora-rs", specifier = "==1.1.0" },
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "pydantic-settings", specifier = ">=2.6" },
-    { name = "pyyaml" },
-    { name = "rerun-sdk", specifier = ">=0.38.1" },
+    { name = "rerun-sdk", specifier = "==0.39.0" },
 ]
 
 [[package]]
 name = "rerun-sdk"
-version = "0.38.1"
+version = "0.39.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -640,10 +621,10 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/16/05/543353a15a9440c59a104f4f38832e0fe3fa9489e701c4697ad0685c5539/rerun_sdk-0.38.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:c88889be8405ea433a459f32518db5dd5705851c66db31c36fa20ab792ee19e6", size = 152471727, upload-time = "2026-09-16T17:03:11.475Z" },
-    { url = "https://files.pythonhosted.org/packages/14/14/0bc2a8ab6bbcb1f9e41903794b38b9b91173a94e6ca23806dec64979416b/rerun_sdk-0.38.1-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:e35e33fd9d6ee69189676b17d3749757a61759e5aca1979532fd2ee3b0fc87c2", size = 162987040, upload-time = "2026-09-16T17:03:18.896Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/a9/3156999af1935b85cbe3991d219255c134a008448aff76026b390171b108/rerun_sdk-0.38.1-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:5f6b16374b1af1ecdb7232ed5c7f02f77e908c7c378ce83321479d2610286c0c", size = 168444319, upload-time = "2026-09-16T17:03:26.856Z" },
-    { url = "https://files.pythonhosted.org/packages/92/72/f8db843e961d6a47bfb7cdeabf6c548ad4f9d0e26ffc0d01e6b716b15ba3/rerun_sdk-0.38.1-cp310-abi3-win_amd64.whl", hash = "sha256:64735766cfbcbd43c8fc7858d8d489fc46db2e56389c9af5f7a449c765039785", size = 145482340, upload-time = "2026-09-16T17:03:35.806Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/d4/53ad22b6cd635553559c2ee447700437ae3ccc7aa50970adee97ecf35fda/rerun_sdk-0.39.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:3d6599664a8414c12212cdab48fad60c71ab156415eafc4e7dbf0405b2089304", size = 154205260, upload-time = "2026-10-12T14:10:17.55Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/13/bd9ac5602c7fc5f358fe55f10da2481374ee5b8860b888cb3140ea1bb81f/rerun_sdk-0.39.0-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:3af91fe364bf2af8e72bf1ab4155ae5acb2e1cf1f1c54770d371b80085e72ed9", size = 165483206, upload-time = "2026-10-12T14:10:26.401Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/03/0749799dc0edf9478571acd83a75ccdce87b5f06d7baec0300c9455e265b/rerun_sdk-0.39.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:42d679739f42324b5a58354fc4ded5ecfcb949c4169df2053e8f490f1be68c8f", size = 170942667, upload-time = "2026-10-12T14:10:34.292Z" },
+    { url = "https://files.pythonhosted.org/packages/22/51/9480aec3d4d588a2a4166f90c4dfb44d95759dd7337a47da496507bc1fe0/rerun_sdk-0.39.0-cp310-abi3-win_amd64.whl", hash = "sha256:893229364933cf71efc486c0f666e1d5c112c436faa4882a0c300571f4120863", size = 147318601, upload-time = "2026-10-12T14:10:40.841Z" },
 ]
 
 [[package]]
