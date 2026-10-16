@@ -2,26 +2,19 @@
 
 The file formats and how each file is made: [`assets/README.md`](../../README.md).
 
-One UR10e standing on a table, a 2F-85 on its flange, and two cameras:
-`cam_overhead` (fixed, looking down at the table) and `cam_wrist` (on the
-flange, looking past the fingers). Their calibration (`calibration/tabletop.yaml`)
-is the input: the generator builds the MJCF cameras from it, and consumers
-(the rerun 3D view) read it.
+The robot alone: a UR10e with a 2F-85 on its flange. The tabletop cell it works
+in, with its table and cameras, is [`assets/cells/ur10e_tabletop`](../../cells/ur10e_tabletop).
 
 ```
-calibration/
-  tabletop.yaml             # the cell's cameras: URDF frame, extrinsics, intrinsics, image size
 meshes/                     # menagerie UR10e .obj + 2F-85 .stl, flat (the model's meshdir), in Git LFS
 schemas/
   src/                      # the vendored menagerie models + their licenses (generator input)
-  build_ur10e_2f85.py       # one-off generator: attach, rename, rescale, add table + home, cameras from calibration/
-  ur10e_2f85.xml            # the generated model every node loads (committed)
+  build_ur10e_2f85.py       # one-off generator: attach, rename and gear the actuators, add the URDF frame sites
+  ur10e_2f85.xml            # the generated robot MJCF (committed), which a cell places
 urdf/
   build_urdf.py             # one-off generator: UR's ur10e xacro + Robotiq 2F-85 URDF, joined at tool0
-  ur10e_2f85.urdf           # the URDF every kinematic consumer loads (committed): rerun 3D, later IK
+  ur10e_2f85.urdf           # the robot URDF (committed), rooted at base_link, which a cell places
   meshes/                   # its meshes, relative paths (UR's Collada visuals converted to GLB), Git LFS
-scenes/
-  tabletop.yaml             # scene file: the URDF, the calibration, the MJCF and its parts
 ```
 
 Two descriptions of one robot: the MJCF (from MuJoCo Menagerie) is the
@@ -37,12 +30,13 @@ URDF's `finger_joint` range over the Menagerie driver's).
 
 ## Model conventions
 
-- Arm actuators are named after their joints (`shoulder_pan_joint`, …).
-- The gripper actuator `gripper` is a position servo in driver-joint radians:
-  0 = open, 0.8 = closed. Gripper command, state and ctrl share that unit.
+- Every actuator is named after the URDF joint it drives, in its units:
+  `shoulder_pan_joint`, … and `finger_joint` (0 = open, 0.725 = closed), a
+  position servo geared from the menagerie driver (0..0.8 rad).
 - Gravity compensation is on for every robot body.
-- `home` keyframe: a ready pose with the gripper pointing down, 0.3 m above the
-  table, open.
+- Sites for the URDF frames: `base_link` on the `base` body (whose Rz(pi) is
+  ROS's base_link convention) and `tool0`.
+- No keyframe: a cell writes `home`.
 
 The meshes are Git LFS files (see the repo's `.gitattributes`): without
 git-lfs a clone holds pointer files and loading the model fails with a mesh
@@ -52,7 +46,8 @@ parse error; `git lfs pull` fetches the real ones.
 
 ```sh
 uv run assets/universal_robots/ur10e/schemas/build_ur10e_2f85.py   # the MJCF
-uv run assets/universal_robots/ur10e/urdf/build_urdf.py                                  # the URDF
+uv run assets/universal_robots/ur10e/urdf/build_urdf.py             # the URDF
+uv run assets/cells/build_cell.py --scene assets/cells/ur10e_tabletop/scene.yaml   # then its cells
 ```
 
 ## Provenance

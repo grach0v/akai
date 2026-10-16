@@ -1,5 +1,5 @@
-# akai_scene — the scene descriptor format, shared by every node that reads one (the mujoco
-# node today; later IK, other simulators). Format and how to write one: assets/README.md.
+# akai_scene — the scene descriptor format, shared by every node that reads one (mujoco, rerun,
+# web_controller, pink) and by the cell builder (assets/cells/build_cell.py). Format and how to write one: assets/README.md.
 #
 # A node depends on it by path, editable, so a change here reaches every node:
 #   dependencies = [..., "akai_scene"]
@@ -8,7 +8,7 @@
 [project]
 name = "akai_scene"
 version = "0.1.0"
-description = "The akai scene descriptor: a robot cell's controllable parts on top of its MJCF, mapped onto its URDF."
+description = "The akai scene descriptor: a robot cell's robots and props, and the files and parts the nodes load."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -103,7 +103,7 @@ the node's `env:`. macOS needs nothing.
       joint_target: { source: web/joint_target, queue_size: 1, queue_policy: drop_oldest }
     outputs: [arm_joint_state, gripper_joint_state, cam_overhead_image, cam_wrist_image, node_state]
     env:
-      SCENE: "../../../assets/universal_robots/ur10e/scenes/tabletop.yaml"
+      SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"
       MODE__CAMERAS: '["cam_overhead", "cam_wrist"]'
       MODE__ENCODING: "jpeg"
 ```

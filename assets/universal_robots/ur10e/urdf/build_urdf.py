@@ -10,9 +10,9 @@
 # ///
 """One-off generator for `ur10e_2f85.urdf`: a UR10e with a Robotiq 2F-85 on its flange.
 
-Not a node and not imported by one. It builds the URDF every URDF consumer loads (the
-rerun node's 3D robot, later IK), from the vendors' own descriptions, fetched and cached
-by `robot_descriptions`:
+Not a node and not imported by one. It builds the robot's URDF, rooted at `base_link`, which
+a cell places in its `world` (`assets/cells/build_cell.py`), from the vendors' own
+descriptions, fetched and cached by `robot_descriptions`:
 
 * the UR10e: Universal Robots' `ur_description` xacro (BSD-3), rendered with `ur_type:=ur10e`;
 * the 2F-85: `robotiq_arg85_description` (BSD), a plain URDF whose `finger_joint` drives the
@@ -27,7 +27,7 @@ robot changes:
     uv run assets/universal_robots/ur10e/urdf/build_urdf.py
 
 Checked against the MuJoCo model (`schemas/ur10e_2f85.xml`) when this was written: with the
-URDF's root `base_link` rotated 180 degrees about z onto the MJCF base, both give the same
+URDF's root `base_link` on the MJCF `base` body (its `base_link` site), both give the same
 tool orientation for every joint vector (the joint zeros and directions agree), and the arms
 agree within ~1 mm in every pose; only the menagerie's flange site sits 16.5 mm short of UR's
 `tool0` (the MJCF generator adds a `tool0` site there). The gripper mount below puts the URDF
@@ -60,9 +60,17 @@ class UrdfBuildConfig(BaseSettings):
 
 
 def render_ur10e() -> ET.Element:
+    """UR's xacro, rooted at `base_link`: its `world` link is dropped, since a cell places the
+    robot in its own `world` (assets/cells/)."""
     packages.update_package_cache({"ur_description": ur10e_description.PACKAGE_PATH})
     doc = XacroDoc.from_file(ur10e_description.XACRO_PATH, subargs=dict(ur10e_description.XACRO_ARGS))
-    return ET.fromstring(doc.to_urdf_string())
+    arm = ET.fromstring(doc.to_urdf_string())
+    for element in list(arm):
+        if (element.tag == "link" and element.get("name") == "world") or (
+            element.tag == "joint" and element.find("parent").get("link") == "world"
+        ):
+            arm.remove(element)
+    return arm
 
 
 def mesh_source(uri: str, package_dirs: dict[str, Path]) -> Path:

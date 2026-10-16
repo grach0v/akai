@@ -11,10 +11,14 @@ description = "Dora node joining several named vectors into one bundle once ever
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "akai_tuple",
     "dora-rs==1.1.0",
     "pyarrow",
     "pydantic-settings>=2.6",
 ]
+
+[tool.uv.sources]
+akai_tuple = { path = "../../libs/akai_tuple", editable = true }   # the tuple format
 
 [dependency-groups]
 # The dora node-hub nodes the example dataflows (examples/) use, in this same environment:

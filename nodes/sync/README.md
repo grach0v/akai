@@ -3,45 +3,53 @@
 Joins several streams into one message, a *tuple*, for a consumer that needs
 them together: a policy or recorder taking an observation of cameras and robot
 state, a robot taking all its parts' targets at once. Dora has no built-in join.
-The node assumes nothing about what the inputs carry. Two modes decide which
+The node assumes nothing about what the inputs carry. Three modes decide which
 messages go together:
 
 1. **`tuple`**: the newest message of each input, as soon as every input has a
    new one. For commands, where only the latest counts.
-2. **`align`**: per reference time (a tick of the observation clock), every
+2. **`align`**: per reference time (a timer tick, or a capture of the clocked producer), every
    input's sample nearest it in time. For observations, where the elements must
    show the same instant however late each one is delivered.
+3. **`step`**: the messages of every input with the same `step`. For joining an
+   observation with what answers it (a target), so a consumer gets both of one step.
 
 ```
 pyproject.toml         # uv project; the `examples` group adds the node-hub nodes the examples use
 src/config.py          # SyncConfig: `mode`, one config class per mode picked by MODE__NAME
 src/main.py            # dora skeleton, identical in every node: config -> mode -> Node -> loop
-src/tuples.py          # the tuple both modes emit
 src/bundler.py         # `tuple` mode's rules: when a tuple goes out, repeats, skew
 src/modes/tuple.py     # `tuple` mode
 src/modes/align.py     # `align` mode
+src/modes/step.py      # `step` mode
 examples/              # test dataflows: sync with dora's timers and node-hub nodes only
 ```
 
 ## The tuple output type
 
-Both modes emit the same message, values and metadata apart as in every dora
+Every mode emits the same message, values and metadata apart as in every dora
 message:
 
 1. **Value:** a one-row Arrow struct with a field per input, named by its id, in
    `inputs` order, holding that input's array, e.g.
    `struct<cam_high: list<uint8>, arm_joint_state: list<double>>`. A consumer
-   reads an input's array as `value.field("cam_high")[0].values`.
+   reads its elements with `akai_tuple.elements(value, metadata)`
+   ([`libs/akai_tuple`](../../libs/akai_tuple), the format's code).
 2. **Metadata:** every key of every input's metadata as `<input id>.<key>`
    (`cam_high.encoding`, `arm_joint_state.names`, `cam_high.timestamp`: dora's
-   send time), plus the tuple's own `capture_time`. Nothing is converted or
-   dropped. Dora's metadata is flat, hence one key per input and key, and an
+   send time), plus the tuple's own `capture_time` and `step` (0, 1, 2, ...: its
+   index, which every node answering the tuple copies onto what it sends, so a
+   recording puts them on the tuple's row; `step` mode keeps its inputs'). Nothing
+   is converted or dropped.
+3. **Tuples join flat:** an input that is a tuple itself gives its elements, under
+   their own names and metadata, not one nested field; its own keys go out as
+   `<input id>.<key>`. Element names must not repeat. Dora's metadata is flat, hence one key per input and key, and an
    input id may not contain a `.`.
 
 Inputs: every id in `inputs`, and `program_state` (the node stops on
 `disconnect`). Outputs: `<output>` (the tuple) and `node_state` (`ready`).
 
-Both modes check *skew*, how far apart in time a tuple's elements are, when
+`tuple` and `align` check *skew*, how far apart in time a tuple's elements are, when
 `max_skew` is set, and handle it as `on_skew` says: `ignore`, `warn` or `error`
 (stop the node).
 
@@ -96,7 +104,7 @@ among samples rather than taking the newest.
 | var | default | meaning |
 | --- | --- | --- |
 | `MODE__NAME` | required | `align` |
-| `MODE__REFERENCE` | required | the input whose messages give the reference times |
+| `MODE__REFERENCE` | required | the input whose messages give the reference times: a timer, or the clocked producer's own stream (e.g. the robot's joint state, `MODE__REFERENCE_TIME: capture_time`); it may also be one of `MODE__INPUTS` |
 | `MODE__REFERENCE_TIME` | `timestamp` | metadata key of a reference message's time (a timer only has `timestamp`) |
 | `MODE__INPUTS` | required | JSON list of the input ids to align, in field order |
 | `MODE__INPUT_TIME` | `timestamp` | metadata key of an input message's time (required on every message) |
@@ -121,6 +129,39 @@ For example, an observation aligned to the observation clock the sim ticks on:
       MODE__INPUT_TIME: "capture_time"
       MODE__OUTPUT: "observation"
       MODE__MAX_SKEW: "0.02"
+```
+
+## `step` mode
+
+1. Every message needs `step`: an observation's index, or a message answering
+   it, which copies it (a controller's target).
+2. Once every input has sent a message with the same step, a tuple of them goes
+   out at once, with that `step`, and the oldest `capture_time` when they all
+   have one.
+3. A step some input never sent is dropped when a newer one completes, and a
+   message for a step older than the last tuple's is dropped too, both handled
+   as `on_drop` says. At most `max_pending` incomplete steps wait.
+
+| var | default | meaning |
+| --- | --- | --- |
+| `MODE__NAME` | required | `step` |
+| `MODE__INPUTS` | required | JSON list of the input ids to join, in field order |
+| `MODE__OUTPUT` | required | output id of the tuple |
+| `MODE__ON_DROP` | `warn` | `ignore`, `warn` (per dropped step) or `error` |
+| `MODE__MAX_PENDING` | `30` | incomplete steps kept waiting |
+
+For example, the observation and the operator's target answering it, for the
+safety filter, which then gets the measured joints and the target of one step:
+
+```yaml
+    inputs:
+      observation: { source: observation/observation, queue_size: 10 }
+      joint_target: { source: web/joint_target, queue_size: 10 }
+    outputs: [step, node_state]
+    env:
+      MODE__NAME: "step"
+      MODE__INPUTS: '["observation", "joint_target"]'
+      MODE__OUTPUT: "step"
 ```
 
 ## Examples

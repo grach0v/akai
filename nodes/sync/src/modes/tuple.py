@@ -8,8 +8,8 @@ apart, as every dora message does:
   `struct<cam_high: list<uint8>, arm_joint_state: list<double>>`;
 * metadata: every key of every input's metadata, as `<input id>.<key>`
   (`cam_high.encoding`, `arm_joint_state.names`, `cam_high.timestamp`: dora's send time of
-  that message), plus the tuple's own `capture_time`, the oldest of the inputs'
-  `capture_time`s, when every input carries one.
+  that message), plus the tuple's own `step` (its index) and `capture_time`, the oldest of the
+  inputs' `capture_time`s, when every input carries one.
 
 so images, joint vectors and anything else travel together untouched, their metadata
 keeping its types (dora's metadata is flat, so it cannot nest one dict per input).
@@ -27,9 +27,9 @@ import logging
 from collections.abc import Callable
 
 import pyarrow as pa
+from akai_tuple import build
 from dora import Node
 
-import tuples
 from bundler import Bundler, SkewCheck
 from config import SyncConfig
 
@@ -43,6 +43,7 @@ class TupleMode:
         self.state: str | None = None
         self.bundler = Bundler(self.opts.inputs, self.opts.on_repeat, logger)
         self.skew = SkewCheck(self.opts.max_skew, self.opts.on_skew, self.opts.skew_time, logger)
+        self.step = 0  # the next tuple's index
         self._handlers: dict[str, Callable[[dict], bool]] = {"program_state": self._on_program_state}
         for input_id in self.opts.inputs:
             self._handlers[input_id] = self._input_handler(input_id)
@@ -78,9 +79,10 @@ class TupleMode:
         self.skew.check(events, self.opts.inputs)
         captured = [e["metadata"].get("capture_time") for e in events]
         stamped = all(t is not None for t in captured)
-        values, metadata = tuples.build(self.opts.inputs, events)
+        values, metadata = build(self.opts.inputs, events)
         if stamped:
             metadata["capture_time"] = min(captured)
+        metadata["step"], self.step = self.step, self.step + 1
         self.node.send_output(self.opts.output, values, metadata=metadata)
 
     def _set_state(self, state: str) -> None:

@@ -56,8 +56,8 @@ class AlignModeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Literal["align"] = "align"
-    # The input whose messages give the reference times, one tuple each: typically the
-    # observation clock, a dora timer shared with the producers.
+    # The input whose messages give the reference times, one tuple each: a dora timer, or the
+    # clocked producer's own stream (the robot's joint state), which may also be one of `inputs`.
     reference: str
     # Metadata key of a reference message's time; a dora timer only has `timestamp`.
     reference_time: SkewTime = "timestamp"
@@ -90,7 +90,34 @@ class AlignModeConfig(BaseModel):
         return inputs
 
 
-ModeConfig = TupleModeConfig | AlignModeConfig  # discriminated by `name`
+class StepModeConfig(BaseModel):
+    """`step` mode: one tuple per observation step, of every input's message for that step."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Literal["step"] = "step"
+    # The inputs to join; each needs `step` on every message. Each becomes a field of the tuple,
+    # in this order, or several: an input that is a tuple is joined in flat. A JSON list in the env.
+    inputs: list[str] = Field(min_length=1)
+    # Output id of the tuple.
+    output: str
+    # What to do with a step some input never sent, dropped once a newer one completes:
+    # "ignore", "warn" (one line per step) or "error" (stop the node).
+    on_drop: Action = "warn"
+    # How many incomplete steps may wait for their missing inputs; the oldest is dropped beyond.
+    max_pending: int = Field(30, gt=0)
+
+    @field_validator("inputs")
+    @classmethod
+    def _no_dot(cls, inputs: list[str]) -> list[str]:
+        """An input's metadata goes out as `<input id>.<key>`: a `.` in an id would be ambiguous."""
+        dotted = [i for i in inputs if "." in i]
+        if dotted:
+            raise ValueError(f"input ids must not contain '.': {dotted}")
+        return inputs
+
+
+ModeConfig = TupleModeConfig | AlignModeConfig | StepModeConfig  # discriminated by `name`
 
 
 class SyncConfig(BaseSettings):

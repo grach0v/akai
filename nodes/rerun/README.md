@@ -79,10 +79,10 @@ Every message is logged at its time by `MODE__INPUT_TIME`, on a timeline of
 that name: dora's send `timestamp` by default, since every message has one, or
 `capture_time` when the producers stamp it (then every message needs it).
 
-A tuple is one aligned sample. Each element is logged at its own time, plus the
-tuple's index on a timeline named after the input (`observation` = 0, 1, 2,
-...), so a recording of observations is one row per observation and no
-element's time is lost.
+A tuple is one aligned sample. Each element is logged at its own time. A message
+with `step` (a tuple's index, set by `sync`, or a target or command answering
+that tuple, which copies it) is also logged at that index on the `step`
+timeline, so a recording is one row per observation, with what was sent for it.
 
 A stream missing a key its role
 requires, or a non-numeric stream listed nowhere, stops the node with an error
@@ -167,7 +167,7 @@ Output `node_state`: `ready` once the sinks are up.
 | `MODE__JOINT_STATES` | `[]` | JSON list of the joint-state streams, which also move the 3D robot |
 | `MODE__PLOTS` | `{}` | JSON object, plot name -> the entities it shows: a whole stream, or one component `<stream>/<name>`, e.g. `'{"elbow": ["arm_joint_state/elbow_joint", "joint_target/elbow_joint"]}'` (measured next to commanded); empty: one plot of all |
 | `MODE__ROBOT_URDF` | unset | robot URDF shown in 3D and moved by the `MODE__JOINT_STATES` streams, relative to the dataflow directory |
-| `MODE__CALIBRATION` | unset | camera calibration file (YAML), relative to the dataflow directory, e.g. `assets/universal_robots/ur10e/calibration/tabletop.yaml` |
+| `MODE__CALIBRATION` | unset | camera calibration file (YAML), relative to the dataflow directory, e.g. `assets/cells/ur10e_tabletop/calibration.yaml` |
 | `MODE__SCENE` | unset | a scene file (format: `assets/README.md`) giving `MODE__ROBOT_URDF` and `MODE__CALIBRATION` instead (its `urdf`, `calibration`); each comes one way, not both |
 | `MODE__BLUEPRINT` | unset | Python file defining `blueprint`, sent instead of the generated layout |
 

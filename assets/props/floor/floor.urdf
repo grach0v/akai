@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!-- A floor, 6 x 6 m. Its frame is the centre of its top surface. -->
+<robot name="floor">
+  <material name="floor"><color rgba="0.3 0.35 0.4 1" /></material>
+  <link name="floor">
+    <visual>
+      <origin xyz="0 0 -0.05" />
+      <geometry><box size="6 6 0.1" /></geometry>
+      <material name="floor" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.05" />
+      <geometry><box size="6 6 0.1" /></geometry>
+    </collision>
+  </link>
+</robot>

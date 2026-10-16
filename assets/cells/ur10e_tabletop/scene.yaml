@@ -1,0 +1,31 @@
+# Scene file of the tabletop cell (format: assets/README.md): a UR10e with a 2F-85 on a table.
+# Paths are relative to this file. `robots` and `props` are what the cell is made of: the cell
+# builder composes them into the URDF and MJCF below. Rebuild after changing them:
+#
+#   uv run assets/cells/build_cell.py assets/cells/ur10e_tabletop/scene.yaml
+
+robots:
+  ur10e:
+    urdf: ../../universal_robots/ur10e/urdf/ur10e_2f85.urdf
+    mjcf: ../../universal_robots/ur10e/schemas/ur10e_2f85.xml
+    pose: [0, 0, 0.75, 0, 0, 1, 0]  # on the table top, facing +x along it (ROS's base_link is turned half a turn)
+    home:  # a ready pose, gripper down, 0.3 m above the table at x = 0.65; the gripper opens
+      shoulder_pan_joint: 2.8706
+      shoulder_lift_joint: -1.5915
+      elbow_joint: 2.0216
+      wrist_1_joint: -2.0009
+      wrist_2_joint: -1.5708
+      wrist_3_joint: -1.8418
+
+props:
+  floor: {urdf: ../../props/floor/floor.urdf, pose: [0, 0, 0, 0, 0, 0, 1]}
+  table: {urdf: ../../props/table/table.urdf, pose: [0.35, 0, 0, 0, 0, 0, 1]}
+
+urdf: ur10e_tabletop.urdf      # built: the kinematics, with the props; joint names and units of every message
+calibration: calibration.yaml  # the cameras
+
+mujoco:  # the simulation: the MJCF (built), and the actuators of each controllable part
+  model: ur10e_tabletop.xml
+  parts:  # every MJCF actuator is named after the URDF joint it drives, in that joint's units
+    arm: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]
+    gripper: [finger_joint]  # the 2F-85's driver; the rest of its linkage follows it

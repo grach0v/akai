@@ -1,17 +1,16 @@
 """`joint` mode — the default: drive every robot part in joint space from a web page.
 
-Every input other than `tick` and `program_state` is a part's joint state (a named
-vector: `names` in its metadata): it adds a card to the page, labelled by the input id,
-with a slider per joint bounded by that joint's limits in the robot's URDF (`urdf`).
-The node publishes every part's target together, as one named vector `joint_target` (every
-part's joint names in `names`), so the robot gets the whole command in one message.
-Wiring another part in is only a dataflow change.
+The node answers every `observation` (a tuple, `akai_tuple`): its joint states (the elements
+that are named vectors, `names` in their metadata) update the page, one card per element with a
+slider per joint bounded by that joint's limits in the robot's URDF (`urdf`), and it sends every
+part's target together, as one named vector `joint_target` carrying the observation's `step`, so
+each target is the answer to one observation. Another part in the observation is another card.
 
 Three parties share one `Board` under its lock:
 
 * the dora loop (main thread) writes the measured joint values and the program
-  state into it, and on every `tick` publishes the targets of all parts, but only while
-  the program is `running`;
+  state into it, and on every observation publishes the targets of all parts, but only
+  while the program is `running`;
 * the page's WebSocket (the web server's thread) is pushed a snapshot at
   `push_hz` and writes targets from the sliders and -/+ buttons into it;
 * nothing else: targets are a latest-value slot per part, not a queue.
@@ -27,8 +26,8 @@ The loop is closed on the measured state:
 The page's Disconnect button reports `disconnect` on `node_state`, which the
 manager answers with `program_state == disconnect`.
 
-Inputs:  tick (dora/timer), program_state, a joint state per part (any other id).
-Outputs: joint_target (every part's, one named vector), node_state.
+Inputs:  observation (a tuple), program_state.
+Outputs: joint_target (every part's, one named vector, with the observation's `step`), node_state.
 """
 
 from __future__ import annotations
@@ -43,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
+from akai_tuple import elements
 from dora import Node
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -209,7 +209,7 @@ class JointMode:
             build_app(self.board, self.opts.push_hz), cfg.host, cfg.port, cfg.server_timeout
         )
         self._handlers: dict[str, Callable[[dict], bool]] = {
-            "tick": self._on_tick,
+            "observation": self._on_observation,
             "program_state": self._on_program_state,
         }
 
@@ -220,20 +220,20 @@ class JointMode:
         self._set_state("ready")
 
     def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node. Every input other than the
-        control ones is a part's joint state, whatever its id."""
-        return self._handlers.get(event["id"], self._on_joint_state)(event)
+        """Dispatch one INPUT event. True means: stop the node."""
+        return self._handlers[event["id"]](event)  # KeyError on an unwired input id is a wiring bug
 
     def close(self) -> None:
         self.server.stop()
 
     # -- inputs --------------------------------------------------------------
 
-    def _on_joint_state(self, event: dict) -> bool:
-        self.board.measured(event["id"], event["metadata"]["names"], event["value"].to_pylist())
-        return False
-
-    def _on_tick(self, event: dict) -> bool:
+    def _on_observation(self, event: dict) -> bool:
+        """Update the measured joints from the observation's named vectors, and answer it."""
+        md = event["metadata"]
+        for name, array, element_md in elements(event["value"], md):
+            if "names" in element_md:
+                self.board.measured(name, element_md["names"], array.to_pylist())
         if self.board.disconnect_requested:
             self._set_state("disconnect")
         targets = self.board.targets()
@@ -242,7 +242,7 @@ class JointMode:
             self.node.send_output(
                 "joint_target",
                 pa.array(values, type=pa.float64()),
-                metadata={"names": names, "capture_time": time.time()},
+                metadata={"names": names, "step": md["step"], "capture_time": time.time()},
             )
         return False
 

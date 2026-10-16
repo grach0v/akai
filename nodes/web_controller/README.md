@@ -21,17 +21,18 @@ the page share the mode's state under a lock; only the dora loop sends outputs.
 
 ## `joint` mode
 
-Drive every robot part in joint space. Every input other than `tick` and
-`program_state` is a part's joint state, a named vector (`names` required): it
-adds a card to the page, labelled by the input id, with a slider per joint
-bounded by that joint's limits in the robot's URDF (`urdf`; a joint without
-limits there raises). Every part's target goes out together, as one named vector
-`joint_target` (all parts' joint names in `names`), so the robot gets the whole
-command in one message. Wiring in another part is a dataflow change only.
+Drive every robot part in joint space. The node answers every `observation`, a
+tuple (`akai_tuple`): each of its named vectors (`names` in their metadata) is a
+part's joint state, a card on the page labelled by the element's name, with a
+slider per joint bounded by that joint's limits in the robot's URDF (`urdf`; a
+joint without limits there raises). Every part's target goes out together, as one
+named vector `joint_target` (all parts' joint names in `names`) carrying the
+observation's `step`, so each target is the answer to one observation and a
+recording puts it on that observation's row.
 
 - A part's target is seeded from its first measured state, so nothing jumps.
 - Targets are clamped to the joint limits.
-- Targets are published on every `tick`, but only while the program is `running`.
+- A target is published for every observation, but only while the program is `running`.
 - Every program-state change resets the targets to the measured state, so a stale
   target never drags the robot back.
 - The page's Disconnect button reports `disconnect` on `node_state`, which ends
@@ -45,15 +46,14 @@ slider over the joint range, −/+ buttons (`step` per click), and the target.
 
 | id                   | source                  | meaning |
 | -------------------- | ----------------------- | ------- |
-| `tick`               | `dora/timer/millis/33`  | publishes the targets; `queue_size: 1, queue_policy: drop_oldest` |
+| `observation`        | `sync` (`align`)        | a tuple: its named vectors are the measured joints; answered with a target; `queue_size: 1, queue_policy: drop_oldest` |
 | `program_state`      | `manager/program_state` | shown on the page; targets go out only while `running`; the node stops on `disconnect` |
-| any other id         | a robot or sim          | measured joints, a named vector (metadata `names`); `queue_size: 1, queue_policy: drop_oldest` |
 
 ### Outputs
 
 | id                    | payload      | metadata |
 | --------------------- | ------------ | -------- |
-| `joint_target` | `float64[Σn]`, every part's targets | `names` (every part's joint names, in the order the parts appeared), `capture_time` |
+| `joint_target` | `float64[Σn]`, every part's targets | `names` (every part's joint names, in the order the parts appeared), `step` (the observation's), `capture_time` |
 | `node_state`          | `utf8[1]`    | `ready` once serving, `disconnect` from the page's button |
 
 ### WebSocket protocol (`/ws`)
@@ -77,7 +77,7 @@ The page sends `{"type": "set", "part", "index", "value"}`,
 | `MODE__STEP` | `0.02` | one −/+ click, in the joint's unit |
 | `MODE__PUSH_HZ` | `15` | page refresh rate |
 
-Planned: a `cartesian` mode (end-effector targets, needs the pinocchio node) and
+Planned: a `cartesian` mode (end-effector targets, needs the pink node) and
 an `episode` mode (task + start/finish for recording).
 
 ## Dataflow snippet
@@ -88,13 +88,11 @@ an `episode` mode (task + start/finish for recording).
     path: ../../../nodes/web_controller/.venv/bin/python
     args: ../../../nodes/web_controller/src/main.py
     inputs:
-      tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
       program_state: manager/program_state
-      arm_joint_state: { source: sim/arm_joint_state, queue_size: 1, queue_policy: drop_oldest }
-      gripper_joint_state: { source: sim/gripper_joint_state, queue_size: 1, queue_policy: drop_oldest }
+      observation: { source: observation/observation, queue_size: 1, queue_policy: drop_oldest }
     outputs: [joint_target, node_state]
     env:
       PORT: "8000"
       MODE__NAME: "joint"
-      MODE__URDF: "../../../assets/universal_robots/ur10e/urdf/ur10e_2f85.urdf"
+      MODE__URDF: "../../../assets/cells/ur10e_tabletop/ur10e_tabletop.urdf"
 ```

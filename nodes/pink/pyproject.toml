@@ -1,0 +1,35 @@
+# pink node — robot kinematics on the URDF with pink (on Pinocchio): a joint-target safety filter, later IK.
+#
+# Not a package: `src/main.py` runs as a plain script under this venv:
+#   build: uv sync --project ../../../nodes/pink
+#   path:  ../../../nodes/pink/.venv/bin/python
+#   args:  ../../../nodes/pink/src/main.py
+# The source dir is `src`, never `pink`: a package named `pink` would shadow the library.
+[project]
+name = "pink-node"
+version = "0.1.0"
+description = "Dora node filtering joint targets on the robot's URDF (limits, speed, collisions) with pink, Pinocchio and Coal."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "akai_scene",
+    "akai_tuple",
+    "daqp",
+    "dora-rs==1.1.0",
+    "numpy",
+    "pin>=4.1",
+    "pin-pink>=4.4",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+akai_scene = { path = "../../libs/akai_scene", editable = true }   # the scene file format
+akai_tuple = { path = "../../libs/akai_tuple", editable = true }   # the tuple format
+
+[tool.ruff]
+line-length = 110
+src = ["src"]

@@ -1,0 +1,24 @@
+# akai_tuple — the tuple format `sync` emits (one message holding several streams' samples),
+# shared by every node that builds or reads one.
+#
+# A node depends on it by path, editable, so a change here reaches every node:
+#   dependencies = [..., "akai_tuple"]
+#   [tool.uv.sources]
+#   akai_tuple = { path = "../../libs/akai_tuple", editable = true }
+[project]
+name = "akai_tuple"
+version = "0.1.0"
+description = "The akai tuple: several streams' samples in one dora message, and how to unpack it."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyarrow",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 110
+src = ["src"]

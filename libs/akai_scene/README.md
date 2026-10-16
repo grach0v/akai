@@ -1,9 +1,10 @@
 # akai_scene
 
-The scene file format as a Python package. A scene file names everything the
-nodes need to know about a robot cell (its URDF, its camera calibration, its
-MuJoCo model and parts), so a dataflow names the cell once instead of every file
-in every node. The format, and how to write the files, are in
+The scene file format as a Python package. A scene file says what a robot cell
+is made of (its robots and props, placed in its `world`), for the cell builder,
+and names everything the nodes need to know about it (its URDF, its camera
+calibration, its MuJoCo model and parts), so a dataflow names the cell once
+instead of every file in every node. The format, and how to write the files, are in
 [`assets/README.md`](../../assets/README.md).
 
 The scene file is a convenience, never a requirement: every value in it can be
@@ -18,8 +19,9 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
 
 | name | what |
 | --- | --- |
-| `load_scene(path) -> Scene` | read and validate a scene file: unknown keys, lists of the wrong length and files that do not exist are errors; paths come back relative to the working directory |
-| `Scene` | `urdf`, `calibration` (paths, or None) and `mujoco` (a `MujocoScene`, or None) |
+| `load_scene(path, check_files=True) -> Scene` | read and validate a scene file: unknown keys, lists of the wrong length and (with `check_files`) files that do not exist are errors; paths come back relative to the working directory |
+| `Scene` | `urdf`, `calibration` (paths, or None), `mujoco` (a `MujocoScene`, or None), `robots` and `props` (by name) |
+| `CellRobot`, `CellProp` | a robot (`urdf`, `mjcf`, `pose`, `home`) or a prop (`urdf`, `pose`) of the cell, for the cell builder |
 | `MujocoScene` | `model` (the MJCF path) and `parts` (name -> its MJCF actuators, named and scaled like the URDF joints they drive) |
 | `load_calibration(path) -> dict[str, CameraCalibration]` | read and validate a calibration file: its cameras by name (`frame`, `extrinsics`, `intrinsics`, `width`, `height`, `depth`) |
 | `one_of(option, explicit, scene, from_scene)` | a value from the config or from the scene file: raises if both give it, None if neither does |
@@ -92,12 +94,12 @@ class MujocoConfig(BaseSettings):
 ## Without a scene file
 
 Any node runs without one: set its explicit fields in the dataflow. The same
-cell as `assets/universal_robots/ur10e/scenes/tabletop.yaml`, by hand:
+cell as `assets/cells/ur10e_tabletop/scene.yaml`, by hand:
 
 ```yaml
   - id: sim
     env:
-      MODEL: "../../../assets/universal_robots/ur10e/schemas/ur10e_2f85.xml"
+      MODEL: "../../../assets/cells/ur10e_tabletop/ur10e_tabletop.xml"
       PARTS: >-
         {"arm": ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
                  "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"],
@@ -105,12 +107,12 @@ cell as `assets/universal_robots/ur10e/scenes/tabletop.yaml`, by hand:
 
   - id: web
     env:
-      MODE__URDF: "../../../assets/universal_robots/ur10e/urdf/ur10e_2f85.urdf"
+      MODE__URDF: "../../../assets/cells/ur10e_tabletop/ur10e_tabletop.urdf"
 
   - id: rerun_record
     env:
-      MODE__ROBOT_URDF: "../../../assets/universal_robots/ur10e/urdf/ur10e_2f85.urdf"
-      MODE__CALIBRATION: "../../../assets/universal_robots/ur10e/calibration/tabletop.yaml"
+      MODE__ROBOT_URDF: "../../../assets/cells/ur10e_tabletop/ur10e_tabletop.urdf"
+      MODE__CALIBRATION: "../../../assets/cells/ur10e_tabletop/calibration.yaml"
 ```
 
 A scene file and explicit fields can also be mixed, as long as each value comes

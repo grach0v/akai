@@ -11,7 +11,7 @@ delays cost latency, never alignment. The rules:
 3. A pending reference time t is settled once every input has a sample at or after t (so the
    nearest is known), or once `timeout` has passed since t (then the nearest so far). Pending
    ones settle in order.
-4. A settled t becomes one tuple (see `tuples.py`): every input's sample nearest t, with the
+4. A settled t becomes one tuple (`akai_tuple`), numbered by `step`: every input's sample nearest t, with the
    tuple's `capture_time` = t. A tuple with an element further than `max_skew` from t is
    handled as `on_skew` says (a lagging or stopped producer): one warning or error per such
    tuple, naming every element over it.
@@ -30,9 +30,9 @@ from collections import deque
 from collections.abc import Callable
 
 import pyarrow as pa
+from akai_tuple import build
 from dora import Node
 
-import tuples
 from bundler import message_time, report
 from config import SyncConfig
 
@@ -47,12 +47,21 @@ class AlignMode:
         # input id -> its (time, event) samples, oldest first
         self.history: dict[str, deque[tuple[float, dict]]] = {i: deque() for i in self.opts.inputs}
         self.pending: deque[float] = deque()  # reference times not yet settled, oldest first
+        self.step = 0  # the next tuple's index
         self._handlers: dict[str, Callable[[dict], bool]] = {
             "program_state": self._on_program_state,
             self.opts.reference: self._on_reference,
         }
         for input_id in self.opts.inputs:
             self._handlers[input_id] = self._input_handler(input_id)
+        if self.opts.reference in self.opts.inputs:  # also aligned: its sample first, then its time
+            sample = self._handlers[self.opts.reference]
+
+            def sample_and_reference(event: dict) -> bool:
+                sample(event)
+                return self._on_reference(event)
+
+            self._handlers[self.opts.reference] = sample_and_reference
 
     # -- node protocol -------------------------------------------------------
 
@@ -107,8 +116,9 @@ class AlignMode:
 
     def _emit(self, t: float, samples: list[tuple[float, dict]]) -> None:
         self._check_skew({i: sample_time - t for i, (sample_time, _) in zip(self.opts.inputs, samples)})
-        values, metadata = tuples.build(self.opts.inputs, [event for _, event in samples])
+        values, metadata = build(self.opts.inputs, [event for _, event in samples])
         metadata["capture_time"] = t
+        metadata["step"], self.step = self.step, self.step + 1
         self.node.send_output(self.opts.output, values, metadata=metadata)
 
     def _check_skew(self, offsets: dict[str, float]) -> None:

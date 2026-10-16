@@ -13,6 +13,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "akai_scene",
+    "akai_tuple",
     "av>=18.1.0",
     "dora-rs==1.1.0",
     "numpy",
@@ -26,6 +27,7 @@ package = false
 
 [tool.uv.sources]
 akai_scene = { path = "../../libs/akai_scene", editable = true }   # the scene file format
+akai_tuple = { path = "../../libs/akai_tuple", editable = true }   # the tuple format
 
 [tool.ruff]
 line-length = 110

@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<!-- A table, 1.5 x 1.2 m and 0.75 m high. Its frame is the centre of its footprint on the floor. -->
+<robot name="table">
+  <material name="wood"><color rgba="0.65 0.5 0.35 1" /></material>
+  <material name="dark_wood"><color rgba="0.25 0.2 0.15 1" /></material>
+  <link name="table">
+    <visual>
+      <origin xyz="0 0 0.73" />
+      <geometry><box size="1.5 1.2 0.04" /></geometry>
+      <material name="wood" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.73" />
+      <geometry><box size="1.5 1.2 0.04" /></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.7 0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+      <material name="dark_wood" />
+    </visual>
+    <collision>
+      <origin xyz="0.7 0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.7 -0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+      <material name="dark_wood" />
+    </visual>
+    <collision>
+      <origin xyz="0.7 -0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+    </collision>
+    <visual>
+      <origin xyz="-0.7 0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+      <material name="dark_wood" />
+    </visual>
+    <collision>
+      <origin xyz="-0.7 0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+    </collision>
+    <visual>
+      <origin xyz="-0.7 -0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+      <material name="dark_wood" />
+    </visual>
+    <collision>
+      <origin xyz="-0.7 -0.55 0.355" />
+      <geometry><box size="0.06 0.06 0.71" /></geometry>
+    </collision>
+  </link>
+</robot>

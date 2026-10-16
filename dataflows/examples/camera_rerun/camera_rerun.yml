@@ -15,8 +15,8 @@
 # the viewer window (`rerun_viewer` reports `finished`), or when the camera's
 # device stops delivering frames.
 #
-#   build: uv run dora build dataflows/tests/camera_rerun/camera_rerun.yml
-#   run:   uv run dora run   dataflows/tests/camera_rerun/camera_rerun.yml
+#   build: uv run dora build dataflows/examples/camera_rerun/camera_rerun.yml
+#   run:   uv run dora run   dataflows/examples/camera_rerun/camera_rerun.yml
 #
 # Node paths are relative to this file's directory.
 

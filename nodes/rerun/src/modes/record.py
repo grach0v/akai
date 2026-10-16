@@ -24,8 +24,9 @@ is unpacked into its elements, `<input>/<field>`, each with its own metadata (th
 
 Every message is logged at its time by `input_time`, on a timeline of that name: dora's send
 `timestamp` (every message has one) or its `capture_time`. A tuple's elements are logged at
-their own times, plus the tuple's index on a timeline named after the input, so a recording of
-observations is one row per observation (see `_record_tuple`). A stream is logged at the entity
+their own times. A message with `step` (a tuple's index, or a message answering it) is also
+logged at that index on the `step` timeline: one row per observation, with the target and command
+sent for it. A stream is logged at the entity
 named like it (`arm_joint_state`, `observation/cam_high`), and a stream missing a key its role
 requires stops the node with an error naming it.
 
@@ -61,6 +62,7 @@ import pyarrow as pa
 import rerun as rr
 import rerun.blueprint as rrb
 from akai_scene import CameraCalibration, load_calibration
+from akai_tuple import elements
 from dora import Node
 from rerun.chunk import OptimizationProfile
 
@@ -254,7 +256,6 @@ class RecordMode:
         self._calibrated_size: dict[str, tuple[int, int]] = {}  # stream -> the size it is calibrated for
         self._blueprint = runpy.run_path(str(opts.blueprint))["blueprint"] if opts.blueprint else None
         self._named: set[str] = set()  # series entities whose line label is logged
-        self._tuples: dict[str, int] = {}  # tuple input -> index of its next tuple
         self._send_layout()
         logger.info(
             "record: writing %s, serving rerun+http://%s:%d/proxy", self.path, opts.bind_ip, opts.grpc_port
@@ -288,33 +289,26 @@ class RecordMode:
         return event["value"][0].as_py() == "disconnect"
 
     def _on_stream(self, event: dict) -> bool:
+        """One message: a tuple's elements, or a plain stream. A message with `step` (a tuple's, or
+        one answering a tuple) is also logged at that index on the `step` timeline, so an
+        observation and the target and command sent for it share one row."""
         value, md = event["value"], event["metadata"]
-        if pa.types.is_struct(
-            value.type
-        ):  # a sync tuple: one field per element, its metadata `<field>.<key>`
-            self._record_tuple(event["id"], value, md)
+        sequences = {"step": md["step"]} if "step" in md else {}
+        if pa.types.is_struct(value.type):  # a tuple (akai_tuple): its elements are the streams
+            streams = [
+                (f"{event['id']}/{name}", array, element_md)
+                for name, array, element_md in elements(value, md)
+            ]
         else:
-            timestamps = {self.opts.input_time: message_time(md, self.opts.input_time, event["id"])}
-            self._set_times(timestamps, {})
-            self._record(event["id"], value, md, timestamps, {})
-        return False
-
-    def _record_tuple(self, input_id: str, value: pa.StructArray, md: dict) -> None:
-        """A tuple as one aligned sample: every element logged at its own time (its
-        `<field>.<input_time>` key) and at the tuple's index on a timeline named after the input,
-        so a recording of observations is one row per observation and no element's time is lost."""
-        index = self._tuples.get(input_id, 0)
-        self._tuples[input_id] = index + 1
-        sequences = {input_id: index}
-        for field in value.type:
-            prefix = f"{field.name}."
-            element_md = {k.removeprefix(prefix): v for k, v in md.items() if k.startswith(prefix)}
-            stream = f"{input_id}/{field.name}"
-            timestamps = {self.opts.input_time: message_time(element_md, self.opts.input_time, stream)}
+            streams = [(event["id"], value, md)]
+        for stream, array, stream_md in streams:
+            timestamps = {self.opts.input_time: message_time(stream_md, self.opts.input_time, stream)}
             self._set_times(timestamps, sequences)
-            self._record(stream, value.field(field.name)[0].values, element_md, timestamps, sequences)
-        for rec in (self.file, self.live):  # set_time sticks: later messages must not carry it
-            rec.disable_timeline(input_id)
+            self._record(stream, array, stream_md, timestamps, sequences)
+        if sequences:
+            for rec in (self.file, self.live):  # set_time sticks: later messages must not carry it
+                rec.disable_timeline("step")
+        return False
 
     def _set_times(self, timestamps: dict[str, float], sequences: dict[str, int]) -> None:
         """Set these timelines on both recordings, for the next logs (`set_time` sticks)."""

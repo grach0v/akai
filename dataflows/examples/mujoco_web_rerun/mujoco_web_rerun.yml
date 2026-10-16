@@ -1,13 +1,15 @@
 # A simulated UR10e + 2F-85 driven in joint space from a web page, recorded to
 # .rrd and shown live, with the manager owning the lifecycle.
 #
-#   web    --> joint_target (both parts' targets, one message) --> sim
-#   sim    --> arm_joint_state, gripper_joint_state   --> web (closes the loop)
-#   dora/timer/millis/33: the observation clock, ticking the sim and the observation aligner
-#   sim    --> both camera images + both joint states --> observation (sync, align): per tick,
-#          every input's sample captured nearest the tick, one aligned tuple
-#   observation   --> observation                     --> rerun_record (one row per observation)
-#   web    --> joint_target                           --> rerun_record (commanded vs measured)
+# One cycle per observation step t, every message after the observation carrying its `step`:
+#   dora/timer/millis/33 --> sim: the only clock; every other node runs on its inputs
+#   sim         --> capture t: joint states + images, one capture_time         --> observation
+#   observation --> obs_t: capture t as one tuple (sync, align on the arm's joint state)
+#                                                                              --> web, safety_step, rerun_record
+#   web         --> target_t: the operator's targets for both parts            --> safety_step, rerun_record
+#   safety_step --> obs_t and target_t as one tuple (sync, step)               --> safety
+#   safety      --> command_t: target_t speed-limited, collision-free (pink) --> sim, rerun_record
+#   rerun_record: one row per step t (obs_t, target_t, command_t); see docs/observation_cycle.excalidraw
 #   rerun_record  --> out/rrd/<app_id>_<time>.rrd  +  gRPC server :9876 (live)
 #   rerun_viewer  --> a rerun viewer on that server: cameras, the 3D robot, one plot per part
 #   manager       <-- every node's node_state; --> program_state --> every node
@@ -16,8 +18,8 @@
 # The program ends (`disconnect`) on Ctrl-C, on the page's Disconnect button, or
 # when the operator closes the viewer window.
 #
-#   build: uv run dora build dataflows/tests/mujoco_web_rerun/mujoco_web_rerun.yml
-#   run:   uv run dora run   dataflows/tests/mujoco_web_rerun/mujoco_web_rerun.yml
+#   build: uv run dora build dataflows/examples/mujoco_web_rerun/mujoco_web_rerun.yml
+#   run:   uv run dora run   dataflows/examples/mujoco_web_rerun/mujoco_web_rerun.yml
 #
 # Headless Linux: add MUJOCO_GL: "egl" to the sim's env (macOS renders with CGL as is).
 # Node and asset paths are relative to this file's directory.
@@ -30,13 +32,15 @@ nodes:
     inputs:
       sim: sim/node_state
       web: web/node_state
+      safety: safety/node_state
+      safety_step: safety_step/node_state
       observation: observation/node_state
       rerun_record: rerun_record/node_state
       rerun_viewer: rerun_viewer/node_state
     outputs: [program_state]
     env:
       MODE__NAME: "simple"
-      MODE__PRODUCERS: '["sim", "web", "observation", "rerun_record", "rerun_viewer"]'
+      MODE__PRODUCERS: '["sim", "web", "safety", "safety_step", "observation", "rerun_record", "rerun_viewer"]'
 
   - id: sim
     build: uv sync --project ../../../nodes/mujoco
@@ -47,10 +51,10 @@ nodes:
       # and frames of that one instant, as triggered cameras and a robot would
       tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
       program_state: manager/program_state
-      joint_target: { source: web/joint_target, queue_size: 1, queue_policy: drop_oldest }
+      joint_target: { source: safety/joint_target, queue_size: 1, queue_policy: drop_oldest }
     outputs: [arm_joint_state, gripper_joint_state, cam_overhead_image, cam_wrist_image, node_state]
     env:
-      SCENE: "../../../assets/universal_robots/ur10e/scenes/tabletop.yaml"
+      SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"
       MODE__NAME: "sim"
       MODE__CAMERAS: '["cam_overhead", "cam_wrist"]'
       MODE__WIDTH: "640"
@@ -64,16 +68,44 @@ nodes:
     path: ../../../nodes/web_controller/.venv/bin/python
     args: ../../../nodes/web_controller/src/main.py
     inputs:
-      tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
       program_state: manager/program_state
-      arm_joint_state: { source: sim/arm_joint_state, queue_size: 1, queue_policy: drop_oldest }
-      gripper_joint_state: { source: sim/gripper_joint_state, queue_size: 1, queue_policy: drop_oldest }
+      # answered with the operator's target_t; its joint states are the page's measured values
+      observation: { source: observation/observation, queue_size: 1, queue_policy: drop_oldest }
     outputs: [joint_target, node_state]
     env:
       HOST: "127.0.0.1"
       PORT: "8000"
       MODE__NAME: "joint"
-      MODE__SCENE: "../../../assets/universal_robots/ur10e/scenes/tabletop.yaml"   # the URDF: slider ranges
+      MODE__SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF: slider ranges
+
+  - id: safety
+    build: uv sync --project ../../../nodes/pink
+    path: ../../../nodes/pink/.venv/bin/python
+    args: ../../../nodes/pink/src/main.py
+    inputs:
+      program_state: manager/program_state
+      # obs_t and target_t in one tuple, answered at once with a command toward the target:
+      # speed-limited, collision-free, starting from the measured joints
+      step: { source: safety_step/step, queue_size: 1, queue_policy: drop_oldest }
+    outputs: [joint_target, node_state]
+    env:
+      SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF
+      MODE__NAME: "joints"
+      MODE__TARGET: "joint_target"   # the tuple's element holding the target
+
+  - id: safety_step
+    build: uv sync --project ../../../nodes/sync
+    path: ../../../nodes/sync/.venv/bin/python
+    args: ../../../nodes/sync/src/main.py
+    inputs:  # target_t answers obs_t: joined by their `step`, the observation's elements flat
+      program_state: manager/program_state
+      observation: { source: observation/observation, queue_size: 10 }
+      joint_target: { source: web/joint_target, queue_size: 10 }
+    outputs: [step, node_state]
+    env:
+      MODE__NAME: "step"
+      MODE__INPUTS: '["observation", "joint_target"]'
+      MODE__OUTPUT: "step"
 
   - id: observation
     build: uv sync --project ../../../nodes/sync
@@ -81,7 +113,6 @@ nodes:
     args: ../../../nodes/sync/src/main.py
     inputs:  # deep queues: the aligner picks by capture time, so it needs every sample
       program_state: manager/program_state
-      tick: dora/timer/millis/33   # the observation clock, the same timer the sim ticks on
       cam_overhead_image: { source: sim/cam_overhead_image, queue_size: 100 }
       cam_wrist_image: { source: sim/cam_wrist_image, queue_size: 100 }
       arm_joint_state: { source: sim/arm_joint_state, queue_size: 100 }
@@ -89,7 +120,8 @@ nodes:
     outputs: [observation, node_state]
     env:
       MODE__NAME: "align"
-      MODE__REFERENCE: "tick"
+      MODE__REFERENCE: "arm_joint_state"   # one observation per sim capture, at its capture_time
+      MODE__REFERENCE_TIME: "capture_time"
       MODE__INPUTS: '["cam_overhead_image", "cam_wrist_image", "arm_joint_state", "gripper_joint_state"]'
       MODE__INPUT_TIME: "capture_time"   # when each sample was taken, not when it was sent (a tick later)
       MODE__OUTPUT: "observation"
@@ -102,7 +134,8 @@ nodes:
     inputs:  # deep queues: a recorder keeps every message, even while it starts up
       program_state: manager/program_state
       observation: { source: observation/observation, queue_size: 1000 }   # cameras + joint states, aligned
-      joint_target: { source: web/joint_target, queue_size: 1000 }   # what the sim is commanded
+      target: { source: web/joint_target, queue_size: 1000 }   # what the operator asks for
+      command: { source: safety/joint_target, queue_size: 1000 }   # what the sim is commanded
     outputs: [node_state]
     env:
       MODE__NAME: "record"
@@ -110,17 +143,17 @@ nodes:
       MODE__INPUT_TIME: "capture_time"   # producers stamp it: log when the data was taken, not sent
       MODE__VIDEO_FPS: "30"
       MODE__JOINT_STATES: '["observation/arm_joint_state", "observation/gripper_joint_state"]'
-      # one plot per joint: measured (the observation) next to commanded (the web controller)
+      # one plot per joint: measured (the observation), the operator's target and the safe command
       MODE__PLOTS: >-
-        {"shoulder_pan": ["observation/arm_joint_state/shoulder_pan_joint", "joint_target/shoulder_pan_joint"],
-        "shoulder_lift": ["observation/arm_joint_state/shoulder_lift_joint", "joint_target/shoulder_lift_joint"],
-        "elbow": ["observation/arm_joint_state/elbow_joint", "joint_target/elbow_joint"],
-        "wrist_1": ["observation/arm_joint_state/wrist_1_joint", "joint_target/wrist_1_joint"],
-        "wrist_2": ["observation/arm_joint_state/wrist_2_joint", "joint_target/wrist_2_joint"],
-        "wrist_3": ["observation/arm_joint_state/wrist_3_joint", "joint_target/wrist_3_joint"],
-        "finger": ["observation/gripper_joint_state/finger_joint", "joint_target/finger_joint"]}
+        {"shoulder_pan": ["observation/arm_joint_state/shoulder_pan_joint", "target/shoulder_pan_joint", "command/shoulder_pan_joint"],
+        "shoulder_lift": ["observation/arm_joint_state/shoulder_lift_joint", "target/shoulder_lift_joint", "command/shoulder_lift_joint"],
+        "elbow": ["observation/arm_joint_state/elbow_joint", "target/elbow_joint", "command/elbow_joint"],
+        "wrist_1": ["observation/arm_joint_state/wrist_1_joint", "target/wrist_1_joint", "command/wrist_1_joint"],
+        "wrist_2": ["observation/arm_joint_state/wrist_2_joint", "target/wrist_2_joint", "command/wrist_2_joint"],
+        "wrist_3": ["observation/arm_joint_state/wrist_3_joint", "target/wrist_3_joint", "command/wrist_3_joint"],
+        "finger": ["observation/gripper_joint_state/finger_joint", "target/finger_joint", "command/finger_joint"]}
       # the cell: its URDF (the 3D robot) and camera calibration (images name their `camera`)
-      MODE__SCENE: "../../../assets/universal_robots/ur10e/scenes/tabletop.yaml"
+      MODE__SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"
 
   - id: rerun_viewer
     build: uv sync --project ../../../nodes/rerun

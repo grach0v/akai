@@ -3,13 +3,6 @@
 
   <option impratio="10" integrator="implicitfast" cone="elliptic"/>
 
-  <size nkey="1"/>
-
-  <visual>
-    <global offwidth="1280" offheight="960"/>
-    <headlight ambient="0.2 0.2 0.2" diffuse="0.6 0.6 0.6"/>
-  </visual>
-
   <default>
     <default class="ur10e">
       <material shininess="0.25"/>
@@ -115,19 +108,12 @@
   </asset>
 
   <worldbody>
-    <geom name="floor" size="3 3 0.1" type="plane" rgba="0.3 0.35 0.4 1"/>
-    <geom name="table" size="0.75 0.6 0.02" pos="0.35 0 0.73" type="box" rgba="0.65 0.5 0.35 1"/>
-    <geom name="table_leg0" size="0.03 0.03 0.355" pos="1.05 0.55 0.355" type="box" rgba="0.25 0.2 0.15 1"/>
-    <geom name="table_leg1" size="0.03 0.03 0.355" pos="1.05 -0.55 0.355" type="box" rgba="0.25 0.2 0.15 1"/>
-    <geom name="table_leg2" size="0.03 0.03 0.355" pos="-0.35 0.55 0.355" type="box" rgba="0.25 0.2 0.15 1"/>
-    <geom name="table_leg3" size="0.03 0.03 0.355" pos="-0.35 -0.55 0.355" type="box" rgba="0.25 0.2 0.15 1"/>
     <light name="spotlight" target="wrist_2_link" pos="0 -1 2" mode="targetbodycom"/>
-    <light name="sun" pos="0 0 3" type="directional"/>
-    <body name="base" childclass="ur10e" pos="0 0 0.75" quat="0 0 0 -1" gravcomp="1">
+    <body name="base" childclass="ur10e" quat="0 0 0 -1" gravcomp="1">
       <inertial pos="0 0 0" mass="4" diaginertia="0.00610633 0.00610633 0.01125"/>
       <geom class="visual" pos="0 0 0" quat="1 0 0 0" material="black" mesh="base_0"/>
       <geom class="visual" quat="1 0 0 0" material="jointgray" mesh="base_1"/>
-      <camera name="cam_overhead" quat="0.671598 0.22126 -0.22126 -0.671598" resolution="640 480" pos="-1.3 0 1.15" sensorsize="0.00192 0.00144" focalpixel="415.692 415.692"/>
+      <site name="base_link"/>
       <body name="shoulder_link" pos="0 0 0.181" gravcomp="1">
         <inertial pos="0 0 0" mass="7.778" diaginertia="0.0314743 0.0314743 0.0218756"/>
         <joint name="shoulder_pan_joint" class="size4" axis="0 0 1"/>
@@ -175,7 +161,6 @@
                   <geom class="eef_collision" size="0.046 0.02" pos="0 0.097 0" quat="0.707107 0.707107 0 0"/>
                   <site name="attachment_site" pos="0 0.1 0" quat="-0.707107 0.707107 0 0"/>
                   <site name="tool0" pos="0 0.1165 0" quat="-0.707107 0.707107 0 0"/>
-                  <camera name="cam_wrist" quat="-0.788205 -0.615412 0 0" resolution="640 480" pos="0 0.1573 0.08" sensorsize="0.00192 0.00144" focalpixel="312.774 312.774"/>
                   <frame pos="0 0.1 0" quat="-0.707107 0.707107 0 0">
                     <body name="2f85/base_mount" childclass="2f85/2f85" pos="0 0 0.007" gravcomp="1">
                       <geom class="2f85/visual" quat="1 0 0 0" material="2f85/black" mesh="2f85/base_mount"/>
@@ -294,8 +279,4 @@
     <general name="wrist_3_joint" class="size2" joint="wrist_3_joint"/>
     <general name="finger_joint" class="2f85/2f85" tendon="2f85/split" ctrlrange="0 0.725" forcerange="-5.51724 5.51724" gear="0.90625" gainprm="121.76" biasprm="0 -121.76 -12.176"/>
   </actuator>
-
-  <keyframe>
-    <key name="home" qpos="2.8706 -1.5915 2.0216 -2.0009 -1.5708 -1.8418 0 0 0 0 0 0 0 0" ctrl="2.8706 -1.5915 2.0216 -2.0009 -1.5708 -1.8418 0"/>
-  </keyframe>
 </mujoco>
