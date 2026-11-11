@@ -8,8 +8,8 @@ Every mode implements the node protocol that main.py drives:
 4. `close()`: release the resources; called however the loop ends.
 """
 
-from modes.joints import JointsMode
+from modes.ik import IkMode
 
 MODES = {
-    "joints": JointsMode,
+    "ik": IkMode,
 }

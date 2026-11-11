@@ -1,18 +1,13 @@
 """`sim` mode — the default: run a MuJoCo scene in real time, captured on every tick.
 
 * `Physics` (background thread) steps the model paced to the wall clock.
-* `Cameras` (background thread, only with cameras) renders every camera from a snapshot of the
-  simulation, one snapshot at a time.
-* `SimMode` (the dora thread) writes joint targets to their actuators, and on every tick copies
-  the simulation into the snapshot and sends every part's joint positions and every camera's
-  frame of it, stamped with its capture_time, once rendered: one instant per capture.
-
-Physics and the dora thread share one `MjData` under one lock; the render thread reads only the
-snapshot. The README has the details.
+* `Cameras` (background thread) renders every camera from a snapshot, on request.
+* `SimMode` (the dora thread) writes joint targets to the actuators; on every tick it copies the
+  simulation into the snapshot, waits for its render (~7 ms) and sends the joint states and
+  frames of that instant, stamped with its capture_time.
 
 Inputs:  tick (dora/timer), program_state, joint_target.
-Outputs: <part>_joint_state per part, <camera>_image per camera, <camera>_depth per RGB-D camera
-         (`depth: true` in the calibration) with MODE__DEPTH, node_state.
+Outputs: <part>_joint_state, <camera>_image, <camera>_depth (with MODE__DEPTH), node_state.
 """
 
 from __future__ import annotations
@@ -33,7 +28,7 @@ from akai_scene import load_calibration
 from dora import Node
 from PIL import Image
 
-from config import MujocoConfig, SimModeConfig
+from config import CameraConfig, MujocoConfig, SimModeConfig
 
 logger = logging.getLogger("mujoco")
 
@@ -121,33 +116,28 @@ def depth_mm(depth: np.ndarray) -> np.ndarray:
 
 
 class Cameras(Worker):
-    """Owns the offscreen renderer: renders every camera from the snapshot, one capture at a time,
-    and hands back the capture with its frames."""
+    """Owns the offscreen renderer: renders every camera from the snapshot, on request."""
 
-    def __init__(self, model: mujoco.MjModel, snapshot: mujoco.MjData, opts: SimModeConfig, depth: list[str]):
+    def __init__(self, model: mujoco.MjModel, snapshot: mujoco.MjData, opts: CameraConfig, depth: list[str]):
         super().__init__("mujoco-render")
         for cam in opts.cameras:
             model.camera(cam)  # an unknown name raises
         self.depth = depth  # the cameras that also render depth
         self._flags = {_render_flag(name): on for name, on in opts.render_flags.items()}
         self._model, self._snapshot, self._opts = model, snapshot, opts
-        self.busy = False  # a submitted capture is not yet collected by `finished`: `snapshot` is in use
         self._todo: queue.SimpleQueue = queue.SimpleQueue()  # the capture to render
         self._done: queue.SimpleQueue = queue.SimpleQueue()  # (capture, frames) rendered
 
-    def submit(self, capture) -> None:
-        """Render every camera from the snapshot (captured into while not busy); returns at once."""
-        self.busy = True
+    def render(self, capture) -> tuple | None:
+        """Render every camera from the snapshot and wait for it: (capture, {camera: (image, depth
+        or None)}), or None if the render thread has died."""
         self._todo.put(capture)
-
-    def finished(self) -> tuple | None:
-        """(capture, {camera: (image, depth or None)}) of the submitted capture once rendered, else None."""
-        try:
-            done = self._done.get_nowait()
-        except queue.Empty:
-            return None
-        self.busy = False
-        return done
+        while True:
+            try:
+                return self._done.get(timeout=0.1)
+            except queue.Empty:
+                if self.ended:
+                    return None
 
     def _encode(self, rgb: np.ndarray) -> np.ndarray:
         if self._opts.encoding == "jpeg":
@@ -189,7 +179,7 @@ class SimMode:
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.model.key("home").id)
         mujoco.mj_forward(self.model, self.data)
         self._lock = threading.Lock()
-        self.physics = Physics(self.model, self.data, self._lock, opts)
+        self.physics = self._physics()
         self.snapshot = mujoco.MjData(self.model)  # what a tick captures into
         calibration = load_calibration(cfg.calibration) if cfg.calibration else {}
         depth = (
@@ -224,6 +214,10 @@ class SimMode:
             self.model.opt.timestep,
         )
 
+    def _physics(self) -> Worker:
+        """The thread that moves the simulation: here in real time."""
+        return Physics(self.model, self.data, self._lock, self.opts)
+
     # -- node protocol -------------------------------------------------------
 
     def start(self, node: Node) -> None:
@@ -246,16 +240,13 @@ class SimMode:
         if any(worker.ended for worker in self._workers):
             self._set_state("finished")  # a background thread died; its traceback is in the log
             return False
+        capture = self._capture()
         if self.cameras is None:
-            self._publish(self._capture(), {})
+            self._publish(capture, {})
             return False
-        done = self.cameras.finished()  # the previous tick's capture, if rendered by now
+        done = self.cameras.render(capture)  # waits for it (~7 ms); physics keeps running
         if done is not None:
             self._publish(*done)
-        if self.cameras.busy:
-            logger.warning("sim: skipped a capture: the previous one is still rendering")
-            return False
-        self.cameras.submit(self._capture())
         return False
 
     def _capture(self) -> tuple[float, list[np.ndarray]]:

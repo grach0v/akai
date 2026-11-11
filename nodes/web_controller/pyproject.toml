@@ -1,4 +1,5 @@
 # web_controller node — a browser page to drive a robot and follow the program.
+# Pinocchio is for the `pose` mode's forward kinematics.
 #
 # Not a package: `src/main.py` runs as a plain script under this venv:
 #   build: uv sync --project ../../nodes/web_controller
@@ -7,7 +8,7 @@
 [project]
 name = "web-controller"
 version = "0.1.0"
-description = "Dora node serving a web page that drives robot parts in joint space."
+description = "Dora node serving a web page that drives robot parts in joint space, or a tool pose."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +16,8 @@ dependencies = [
     "akai_tuple",
     "dora-rs==1.1.0",
     "fastapi>=0.115",
+    "numpy",
+    "pin>=4.1",
     "pyarrow",
     "pydantic-settings>=2.6",
     "uvicorn[standard]>=0.32",

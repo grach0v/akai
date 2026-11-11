@@ -7,6 +7,7 @@ The tuple format as a Python package: several streams' samples in one dora messa
 | --- | --- |
 | `build(names, events)` | a tuple's (value, metadata) from one dora event per element; an event that is a tuple is joined in flat, its elements becoming this tuple's |
 | `elements(value, metadata)` | a tuple's elements: (name, array, metadata) each |
+| `select(value, metadata, names)` | the tuple with only the elements `names`, in that order, zero-copy |
 | `one_row(array)` | an array as one row of a list array (a tuple field), zero-copy |
 
 A tuple's own metadata keys have no `.`: `capture_time`, and `step`, the observation index

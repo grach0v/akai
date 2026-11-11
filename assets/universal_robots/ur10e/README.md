@@ -37,6 +37,9 @@ URDF's `finger_joint` range over the Menagerie driver's).
 - Sites for the URDF frames: `base_link` on the `base` body (whose Rz(pi) is
   ROS's base_link convention) and `tool0`.
 - No keyframe: a cell writes `home`.
+- The URDF has a `tcp` link, the tool centre point, 0.156 m beyond `tool0` and
+  oriented like it: the middle of the finger pads, closed (0.144 m open). A pose
+  target drives it.
 
 The meshes are Git LFS files (see the repo's `.gitattributes`): without
 git-lfs a clone holds pointer files and loading the model fails with a mesh

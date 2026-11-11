@@ -1,0 +1,171 @@
+# A simulated UR10e + 2F-85 driven by its TCP pose from a web page (hold the jog buttons), IK in
+# pink, recorded to .rrd and shown live. The web controller's own tick (the teleop clock) only
+# moves its target; the target goes out as the answer to the next observation.
+#
+# One cycle per tick (dora/timer/millis/33, the only robot clock):
+# 1. sim sends the joint states and images of one instant;
+# 2. observation (sync, align) joins them into obs_t;
+# 3. web answers obs_t with the operator's target_t;
+# 4. safety_step (sync, step) joins obs_t's joints and target_t;
+# 5. safety (pink) answers with command_t, speed-limited and collision-free, to the sim.
+# Every answer carries obs_t's `step`, so rerun_record logs one row per step. rerun_viewer shows it
+# live; the manager owns the lifecycle.
+#
+# Open http://127.0.0.1:8000 once the program is `running`. Ctrl-C, the page's Disconnect button
+# or closing the viewer ends the program.
+#
+#   build: uv run dora build dataflows/examples/mujoco_web_pose/mujoco_web_pose.yml
+#   run:   uv run dora run   dataflows/examples/mujoco_web_pose/mujoco_web_pose.yml
+#
+# Headless Linux: add MUJOCO_GL: "egl" to the sim's env. Paths are relative to this file.
+
+nodes:
+  - id: manager
+    build: uv sync --project ../../../nodes/manager
+    path: ../../../nodes/manager/.venv/bin/python
+    args: ../../../nodes/manager/src/main.py
+    inputs:
+      sim: sim/node_state
+      web: web/node_state
+      safety: safety/node_state
+      safety_step: safety_step/node_state
+      observation: observation/node_state
+      rerun_record: rerun_record/node_state
+      rerun_viewer: rerun_viewer/node_state
+    outputs: [program_state]
+    env:
+      MODE__NAME: "simple"
+      MODE__PRODUCERS: '["sim", "web", "safety", "safety_step", "observation", "rerun_record", "rerun_viewer"]'
+
+  - id: sim
+    build: uv sync --project ../../../nodes/mujoco
+    path: ../../../nodes/mujoco/.venv/bin/python
+    args: ../../../nodes/mujoco/src/main.py
+    inputs:
+      # the observation clock: every tick the sim sends the joint states and frames of one instant,
+      # one period after the previous; it advances and renders them as soon as the command comes
+      tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
+      program_state: manager/program_state
+      joint_target: { source: safety/joint_target, queue_size: 1, queue_policy: drop_oldest }
+    outputs: [arm_joint_state, gripper_joint_state, cam_overhead_image, cam_wrist_image, node_state]
+    env:
+      SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"
+      MODE__NAME: "step"   # one 33 ms period per tick, advanced as soon as the command comes
+      MODE__PERIOD: "0.033"   # the tick's interval
+      MODE__CAMERAS: '["cam_overhead", "cam_wrist"]'
+      MODE__WIDTH: "640"
+      MODE__HEIGHT: "480"
+      MODE__ENCODING: "jpeg"
+      MODE__JPEG_QUALITY: "80"
+      MODE__RENDER_FLAGS: '{"SHADOW": false, "REFLECTION": false, "SKYBOX": false, "FOG": false, "HAZE": false}'
+
+  - id: web
+    build: uv sync --project ../../../nodes/web_controller
+    path: ../../../nodes/web_controller/.venv/bin/python
+    args: ../../../nodes/web_controller/src/main.py
+    inputs:
+      program_state: manager/program_state
+      # the teleop clock: moves the target pose by the held jog, sends nothing
+      tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
+      # answered with the operator's target_t; its joint states give the measured pose
+      observation: { source: observation/observation, queue_size: 1, queue_policy: drop_oldest }
+    outputs: [pose_target, joint_target, node_state]
+    env:
+      HOST: "127.0.0.1"
+      PORT: "8000"
+      MODE__NAME: "pose"
+      MODE__SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF: kinematics, slider ranges
+      MODE__FRAME: "tcp"   # the tool centre point, between the finger pads
+      MODE__REFERENCE: "base_link"
+
+  - id: safety
+    build: uv sync --project ../../../nodes/pink
+    path: ../../../nodes/pink/.venv/bin/python
+    args: ../../../nodes/pink/src/main.py
+    inputs:
+      program_state: manager/program_state
+      # obs_t and target_t in one tuple, answered at once with a command one IK step toward the
+      # targets: speed-limited, collision-free, starting from the measured joints
+      step: { source: safety_step/step, queue_size: 1, queue_policy: drop_oldest }
+    outputs: [joint_target, node_state]
+    env:
+      SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF
+      MODE__NAME: "ik"
+      MODE__TARGETS: '["pose_target", "joint_target"]'   # the tuple's elements holding the targets
+
+  - id: safety_step
+    build: uv sync --project ../../../nodes/sync
+    path: ../../../nodes/sync/.venv/bin/python
+    args: ../../../nodes/sync/src/main.py
+    inputs:  # target_t answers obs_t: joined by their `step`, the observation's elements flat
+      program_state: manager/program_state
+      observation: { source: observation/observation, queue_size: 10 }
+      pose_target: { source: web/pose_target, queue_size: 10 }
+      joint_target: { source: web/joint_target, queue_size: 10 }
+    outputs: [step, node_state]
+    env:
+      MODE__NAME: "step"
+      MODE__INPUTS: '["observation", "pose_target", "joint_target"]'
+      MODE__ELEMENTS: '["arm_joint_state", "gripper_joint_state", "pose_target", "joint_target"]'   # not the images
+      MODE__OUTPUT: "step"
+
+  - id: observation
+    build: uv sync --project ../../../nodes/sync
+    path: ../../../nodes/sync/.venv/bin/python
+    args: ../../../nodes/sync/src/main.py
+    inputs:  # deep queues: the aligner picks by capture time, so it needs every sample
+      program_state: manager/program_state
+      cam_overhead_image: { source: sim/cam_overhead_image, queue_size: 100 }
+      cam_wrist_image: { source: sim/cam_wrist_image, queue_size: 100 }
+      arm_joint_state: { source: sim/arm_joint_state, queue_size: 100 }
+      gripper_joint_state: { source: sim/gripper_joint_state, queue_size: 100 }
+    outputs: [observation, node_state]
+    env:
+      MODE__NAME: "align"
+      MODE__REFERENCE: "arm_joint_state"   # one observation per sim capture, at its capture_time
+      MODE__REFERENCE_TIME: "capture_time"
+      MODE__INPUTS: '["cam_overhead_image", "cam_wrist_image", "arm_joint_state", "gripper_joint_state"]'
+      MODE__INPUT_TIME: "capture_time"   # when each sample was taken, not when it was sent (after the render)
+      MODE__OUTPUT: "observation"
+      MODE__MAX_SKEW: "0.02"   # the sim captures everything on the tick: more means it lags
+
+  - id: rerun_record
+    build: uv sync --project ../../../nodes/rerun
+    path: ../../../nodes/rerun/.venv/bin/python
+    args: ../../../nodes/rerun/src/main.py
+    inputs:  # deep queues: a recorder keeps every message, even while it starts up
+      program_state: manager/program_state
+      observation: { source: observation/observation, queue_size: 1000 }   # cameras + joint states, aligned
+      pose_target: { source: web/pose_target, queue_size: 1000 }   # what the operator asks for: the TCP's pose
+      target: { source: web/joint_target, queue_size: 1000 }   # and the gripper's
+      command: { source: safety/joint_target, queue_size: 1000 }   # what the sim is commanded
+    outputs: [node_state]
+    env:
+      MODE__NAME: "record"
+      MODE__GRPC_PORT: "9876"
+      MODE__INPUT_TIME: "capture_time"   # producers stamp it: log when the data was taken, not sent
+      MODE__VIDEO_FPS: "30"
+      MODE__JOINT_STATES: '["observation/arm_joint_state", "observation/gripper_joint_state"]'
+      # one plot per joint: measured (the observation) and the safe command, the gripper's target too
+      MODE__PLOTS: >-
+        {"shoulder_pan": ["observation/arm_joint_state/shoulder_pan_joint", "command/shoulder_pan_joint"],
+        "shoulder_lift": ["observation/arm_joint_state/shoulder_lift_joint", "command/shoulder_lift_joint"],
+        "elbow": ["observation/arm_joint_state/elbow_joint", "command/elbow_joint"],
+        "wrist_1": ["observation/arm_joint_state/wrist_1_joint", "command/wrist_1_joint"],
+        "wrist_2": ["observation/arm_joint_state/wrist_2_joint", "command/wrist_2_joint"],
+        "wrist_3": ["observation/arm_joint_state/wrist_3_joint", "command/wrist_3_joint"],
+        "finger": ["observation/gripper_joint_state/finger_joint", "target/finger_joint", "command/finger_joint"]}
+      # the cell: its URDF (the 3D robot) and camera calibration (images name their `camera`)
+      MODE__SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"
+
+  - id: rerun_viewer
+    build: uv sync --project ../../../nodes/rerun
+    path: ../../../nodes/rerun/.venv/bin/python
+    args: ../../../nodes/rerun/src/main.py
+    inputs:
+      tick: { source: dora/timer/millis/500, queue_size: 1, queue_policy: drop_oldest }  # to notice a closed viewer window
+      program_state: manager/program_state
+    outputs: [node_state]
+    env:
+      MODE__NAME: "visualize"
+      MODE__SERVER_URL: "rerun+http://127.0.0.1:9876/proxy"

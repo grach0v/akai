@@ -73,11 +73,13 @@ def urdf_limits(urdf: Path) -> dict[str, tuple[float, float]]:
 
 
 class Board:
-    """The state the dora loop and the page share. Every method takes the lock."""
+    """The state the dora loop and the page share. Every method takes the lock. Joints in
+    `exclude` (driven another way, by a pose) get no slider and no target."""
 
-    def __init__(self, opts: JointModeConfig):
+    def __init__(self, opts: JointModeConfig, exclude: frozenset[str] = frozenset()):
         self._opts = opts
         self._limits = urdf_limits(opts.urdf)
+        self._exclude = exclude
         self._lock = threading.Lock()
         self._parts: dict[str, PartState] = {}
         self._program_state: str | None = None
@@ -88,6 +90,10 @@ class Board:
     def measured(self, part: str, names: list[str], values: list[float]) -> None:
         """A part's measured joint values. The first one adds the part, seeded with target = measured.
         A joint without limits in the URDF has nothing to bound its slider by, and raises."""
+        kept = [i for i, n in enumerate(names) if n not in self._exclude]
+        if not kept:
+            return
+        names, values = [names[i] for i in kept], [values[i] for i in kept]
         with self._lock:
             state = self._parts.get(part)
             if state is None:
@@ -110,8 +116,7 @@ class Board:
         with self._lock:
             if value != self._program_state:
                 self._program_state = value
-                for state in self._parts.values():
-                    state.target = list(state.measured)
+                self._reset()
 
     def targets(self) -> tuple[list[str], list[float]] | None:
         """Every part's joint names and targets, in the order the parts appeared, while the program
@@ -154,8 +159,7 @@ class Board:
             if kind == "disconnect":
                 self._disconnect_requested = True
             elif kind == "sync":
-                for state in self._parts.values():
-                    state.target = list(state.measured)
+                self._reset()
             elif kind not in ("set", "nudge"):
                 logger.warning("page sent an unknown message type %r", kind)
             elif msg["part"] not in self._parts:
@@ -167,11 +171,19 @@ class Board:
                 )
                 state.target[i] = min(max(value, state.lower[i]), state.upper[i])
 
+    def page_closed(self) -> None:
+        """The page went away (closed, reloaded, network lost)."""
+
+    def _reset(self) -> None:
+        """Every target to the measured state. Under the lock."""
+        for state in self._parts.values():
+            state.target = list(state.measured)
+
 
 def build_app(board: Board, push_hz: float) -> FastAPI:
     app = FastAPI(title="web_controller")
 
-    page_file = Path(__file__).resolve().parent.parent / "web" / "joint.html"
+    page_file = Path(__file__).resolve().parent.parent / "web" / "index.html"
 
     @app.get("/")
     async def page() -> FileResponse:
@@ -194,6 +206,7 @@ def build_app(board: Board, push_hz: float) -> FastAPI:
             pass
         finally:
             pusher.cancel()
+            board.page_closed()
 
     return app
 
@@ -204,7 +217,7 @@ class JointMode:
         self.opts = cfg.mode
         self.node: Node | None = None
         self.state: str | None = None
-        self.board = Board(self.opts)
+        self.board = self._board()
         self.server = WebServer(
             build_app(self.board, self.opts.push_hz), cfg.host, cfg.port, cfg.server_timeout
         )
@@ -212,6 +225,9 @@ class JointMode:
             "observation": self._on_observation,
             "program_state": self._on_program_state,
         }
+
+    def _board(self) -> Board:
+        return Board(self.opts)
 
     # -- node protocol -------------------------------------------------------
 

@@ -1,64 +1,47 @@
 # mujoco
 
-Simulates a robot cell in [MuJoCo](https://mujoco.org) in real time, with the
-contract a real robot node has, so the sim and the hardware are interchangeable
-in a dataflow: every controllable *part* (an arm, a gripper, ...) is reported as
-`<part>_joint_state` in the robot URDF's joint names and units, the sim is driven
-by joint targets in the same names, and the MJCF's cameras are rendered and
-published as `<camera>_image`, plus `<camera>_depth` for the RGB-D ones with `MODE__DEPTH`.
+Simulates a robot cell in [MuJoCo](https://mujoco.org) with the contract a real
+robot node has: each *part* (arm, gripper) goes out as `<part>_joint_state` in
+the URDF's joint names and units, `joint_target` drives it in the same names,
+and the MJCF's cameras go out as `<camera>_image` (and `<camera>_depth`).
 
 ```
-src/config.py      # MujocoConfig: the scene (MODEL + PARTS, or SCENE) + `mode`, picked by MODE__NAME
-src/main.py        # dora skeleton, identical in every node: config -> mode -> Node -> loop
-src/modes/sim.py   # `sim`: physics thread, render thread, capture on tick
+src/config.py      # MujocoConfig: the scene (MODEL + PARTS, or SCENE) + `mode`
+src/main.py        # dora skeleton, identical in every node
+src/modes/sim.py   # `sim`: real time
+src/modes/step.py  # `step`: one fixed period per tick
 ```
 
-## The scene
-
-The sim needs the MJCF (`MODEL`) and its parts (`PARTS`): the MJCF actuators of
-each part. Every actuator is named after the URDF joint it drives, in that
-joint's units, so joint states (the actuators' lengths) and targets (their ctrl)
-need no conversion. Both can come from a scene file's `mujoco` section instead (`SCENE`), not
-both ways. The format, and how to make the files, are in
-[`assets/README.md`](../../assets/README.md). Unknown keys and names the model
-does not have fail at startup.
-
-The MJCF needs a `home` keyframe: the sim starts there.
+The MJCF and its parts can come from a scene file (`SCENE`); the format is in
+[`assets/README.md`](../../assets/README.md). The MJCF needs a `home` keyframe,
+where the sim starts.
 
 ## `sim` mode
 
-The sim captures on the tick, the way triggered cameras and a robot would:
-everything a tick publishes shows one instant. Three threads:
+Real time, as a real robot. Physics runs on its own thread, paced to the wall
+clock. A `joint_target` is written to the actuators as it arrives. On each tick
+the node copies the simulation, waits for the cameras to render it (~7 ms for
+two 640×480 JPEG cameras, ~15 ms with depth), and sends joint states and images
+of that instant, stamped with `capture_time`.
 
-1. **physics** steps the model paced to the wall clock (`realtime_factor`).
-   When it falls more than `max_lag` behind, it drops the backlog instead of
-   racing to catch up.
-2. **render** (only with cameras) owns the offscreen renderer and renders every
-   camera from a snapshot of the simulation, on request.
-3. **dora** (the main thread) writes every `joint_target` straight to its
-   joints' actuators, clipped to their control range, so physics applies it from
-   its next step: a new target replaces the old one, nothing queues. It never
-   waits for a render. On every `tick`:
-   1. if the previous capture has been rendered, it sends it: every part's joint
-      positions and every camera's frame, stamped with its `capture_time`;
-   2. if the render still runs, this tick captures nothing (a warning);
-      otherwise it copies the simulation into the snapshot (microseconds, under
-      the lock physics steps under) and hands it to the render thread.
+## `step` mode
 
-So a capture goes out one tick after it was taken: align it by `capture_time`
-(a `sync` in `align` mode with `input_time: capture_time`), not by when it was
-sent. Without cameras, a tick captures and sends at once. If a background thread
-dies, its traceback is logged and the node reports `finished`.
+One fixed `period` of simulated time per tick. The first `joint_target` after a
+send starts the next period on a background thread: physics steps one period,
+then the cameras render. The tick sends what is ready at once. With no command
+(nothing driving the robot yet), the tick steps on the last targets itself.
+
+So the observation goes out right on the tick, but a command acts from the start
+of its period, which no real robot does. Use `sim` to see a slow controller or
+policy cost what it would on hardware.
 
 ### Inputs
 
 | id | source | meaning |
 | --- | --- | --- |
-| `tick` | `dora/timer/millis/<N>` | capture: the observation rate (33 for 30 Hz); `queue_size: 1, queue_policy: drop_oldest` |
+| `tick` | `dora/timer/millis/<N>` | the observation rate; `queue_size: 1, queue_policy: drop_oldest` |
 | `program_state` | `manager/program_state` | the node stops on `disconnect` |
-| `joint_target` | a controller | a named vector (`float64[n]` + `names`, URDF names and units): each value drives the joint it names, so one message may cover one part or the whole robot; a name the sim has no actuator for raises. `queue_size: 1, queue_policy: drop_oldest` |
-
-Any other input id raises: an unexpected input on a producer is a wiring bug.
+| `joint_target` | a controller | a named vector of any joints; `queue_size: 1, queue_policy: drop_oldest` |
 
 ### Outputs
 
@@ -66,7 +49,7 @@ Any other input id raises: an unexpected input on a producer is a wiring bug.
 | --- | --- | --- |
 | `<part>_joint_state` | `float64[n]` joint positions (URDF units) | `names` (URDF joint names), `capture_time` |
 | `<camera>_image` | `uint8[N]` | `camera`, `encoding` (`rgb8` \| `jpeg`), `width`, `height`, `capture_time` |
-| `<camera>_depth` | `uint16[w*h]` millimetres, with `MODE__DEPTH`, for RGB-D cameras (`depth: true` in the calibration) | `camera`, `encoding` (`uint16`), `width`, `height`, `capture_time` |
+| `<camera>_depth` | `uint16[w*h]` millimetres, RGB-D cameras with `MODE__DEPTH` | `camera`, `encoding` (`uint16`), `width`, `height`, `capture_time` |
 | `node_state` | `utf8[1]` | `ready` once running, `finished` if a background thread died |
 
 ### Config
@@ -74,18 +57,19 @@ Any other input id raises: an unexpected input on a producer is a wiring bug.
 | var | default | meaning |
 | --- | --- | --- |
 | `MODEL` | unset | the MJCF, relative to the dataflow directory |
-| `PARTS` | unset | JSON object, part name -> its joints (format: `assets/README.md`), e.g. `'{"arm": ["shoulder_pan_joint", ...], "gripper": ["finger_joint"]}'` |
-| `SCENE` | unset | a scene file giving `MODEL` and `PARTS` instead (its `mujoco` section); one of the two ways is required |
+| `PARTS` | unset | JSON object, part name -> its joints |
+| `SCENE` | unset | a scene file giving `MODEL`, `PARTS` and `CALIBRATION` |
 | `CALIBRATION` | unset | camera calibration file (or the scene's): its RGB-D cameras also render depth |
-| `MODE__NAME` | `sim` | |
+| `MODE__NAME` | `sim` | `sim` (real time) or `step` (one period per tick) |
 | `MODE__CAMERAS` | `[]` | JSON list of MJCF cameras to publish; empty: no renderer |
-| `MODE__DEPTH` | `false` | also publish `<camera>_depth` for the RGB-D cameras (`depth: true` in the calibration) |
+| `MODE__DEPTH` | `false` | also publish depth for the RGB-D cameras |
 | `MODE__WIDTH` / `MODE__HEIGHT` | `640` / `480` | image size, at most the model's offscreen buffer |
-| `MODE__RENDER_FLAGS` | `{}` | JSON object of MuJoCo render flags by `mjtRndFlag` name without `mjRND_` (`SHADOW`, `REFLECTION`, `SKYBOX`, `FOG`, `HAZE`, ...); unset ones keep MuJoCo's defaults |
+| `MODE__RENDER_FLAGS` | `{}` | JSON object of MuJoCo render flags without `mjRND_`, e.g. `{"SHADOW": false}` |
 | `MODE__ENCODING` | `rgb8` | `rgb8` or `jpeg` |
 | `MODE__JPEG_QUALITY` | `90` | 1–100, for `jpeg` |
-| `MODE__REALTIME_FACTOR` | `1.0` | simulated seconds per wall-clock second |
-| `MODE__MAX_LAG` | `0.1` | seconds behind the wall clock before the backlog is dropped |
+| `MODE__REALTIME_FACTOR` | `1.0` | `sim`: simulated seconds per wall-clock second |
+| `MODE__MAX_LAG` | `0.1` | `sim`: seconds behind the wall clock before the backlog is dropped |
+| `MODE__PERIOD` | `0.033` | `step`: simulated seconds per tick, the tick's interval |
 
 Headless Linux needs an offscreen GL: set `MUJOCO_GL: "egl"` (or `osmesa`) in
 the node's `env:`. macOS needs nothing.

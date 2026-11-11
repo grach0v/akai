@@ -72,10 +72,9 @@ uv run dora run   dataflows/examples/mujoco_web_rerun/mujoco_web_rerun.yml
 ```
 
 A UR10e with a Robotiq 2F-85 in MuJoCo. Open http://127.0.0.1:8000 to drive
-its joints and gripper; the rerun viewer shows both sim cameras, the robot in
-3D and one plot per part (measured vs commanded joints), and everything is
-recorded to `out/rrd/`. `mujoco_web_rerun_depth` is the same with both cameras'
-depth images too (about 37 MB/s more in the recording).
+its joints and gripper; rerun shows the cameras, the robot in 3D and joint
+plots, and records everything to `out/rrd/`. `mujoco_web_rerun_depth` adds depth
+images; `mujoco_web_pose` jogs the tool centre point instead, with IK in pink.
 
 To replay a recording, open it with the robot model as an asset:
 
@@ -88,24 +87,16 @@ uv run --project nodes/rerun rerun --asset <out>/rrd/ur10e_tabletop.model.rrd <o
 ### Node and dataflow pattern
 
 - **Nodes exchange plain Apache Arrow messages** — no shared code, no language
-  lock-in. Every data message is recommended to carry a captured
-  `capture_time` in metadata so a consumer can align streams that arrive at
-  different rates. (Not `timestamp`: dora already puts its own HLC send-time
-  there.) `capture_time` is the wall clock of the machine that captured the
-  data, so streams are only comparable on one clock: for now everything a robot
-  program captures (the robot, its cameras) is assumed to run on one computer.
-  Splitting producers across machines needs their clocks synchronised (chrony,
-  PTP) first.
-- **Observations are aligned by capture time, on one observation clock.** A
-  `dora/timer` (e.g. 33 ms) ticks the producers and a `sync` node in `align`
-  mode. A producer that can capture on the tick does (the sim; later, triggered
-  cameras); one that cannot (a free-running webcam) sends each sample as it is
-  captured. Either way every sample carries its true `capture_time`, and the
-  aligner builds one observation per tick from every input's sample captured
-  nearest the tick. Delivery delays then cost latency, never alignment, and
-  each element's own `capture_time` is kept, so every offset can be checked.
-  Heavy or blocking work (camera capture, MuJoCo rendering) runs on a
-  background thread, so the dora loop stays responsive.
+  lock-in. Captured data should carry `capture_time` (wall clock at capture) in
+  its metadata: it helps `sync` align streams and the recorder log them, but it
+  is a recommendation, not a requirement. Capture times compare only on one
+  clock, so for now a robot's producers run on one computer.
+- **One observation per tick of the robot clock.** A `dora/timer` ticks the
+  producers; a `sync` node in `align` mode joins what they captured into one
+  observation per tick.
+- **Keep the dora loop short.** Slow or unbounded work (waiting for a camera
+  frame, video encoding) runs on a background thread. Short work may block: the
+  real-time sim waits ~7 ms per tick for its render.
 - **A node opens its resources before it joins the dataflow.** The mode is
   built first (camera, recording, viewer) and only then `Node()` is created
   and handed to `mode.start(node)`. dora starts the timers once every node has
@@ -123,30 +114,23 @@ uv run --project nodes/rerun rerun --asset <out>/rrd/ur10e_tabletop.model.rrd <o
 
 ### Messaging formats
 
-Messages are flat Apache Arrow arrays; their metadata says what they are, so a
-consumer (the recorder) needs no config or model to handle
-a stream it has never seen. Each node documents its own messages in its
-`README.md` under `nodes/<node name>/`; the shared keys are:
+Messages are flat Apache Arrow arrays whose metadata says what they are. Each
+node documents its messages in its README; the shared keys are:
 
 | key | type | meaning |
 | --- | --- | --- |
-| `capture_time` | float | wall-clock seconds (`time.time()`) when the data was captured; not `timestamp`, dora owns that key |
+| `capture_time` | float | wall-clock seconds (`time.time()`) when the data was captured (dora owns `timestamp`) |
 | `names` | list[str] | one label per value; for joint vectors the URDF joint names |
 | `encoding`, `width`, `height` | str, int, int | images: `rgb8` (raveled H×W×3) or `jpeg`; depth: `uint16` (millimetres) |
 | `camera` | str | on images and depth: the camera's name, as in the cell's calibration file |
-| `step` | int | the observation index a message belongs to: set on each tuple by `sync`, copied by every node answering it (a controller's target, the safety filter's command), so a recording puts them on the observation's row |
+| `step` | int | the observation a message belongs to: set by `sync`, copied by every answer to it (target, command) |
 
 List values must be plain Python numbers: dora turns a list holding numpy scalars
 into its string form, without an error.
 
-Images and depth say what they are by their `encoding`, so a consumer like the
-recorder needs no config for them. Joint states and targets look alike (both
-named vectors), so a node that must tell them apart is told by its config (the
-recorder's `joint_states`). Each stream type requires its keys; a
-consumer may rely on them and fails loudly without them. A *named vector* is a
-flat numeric array whose `names` label every value (one name per value): joint
-states and targets are named vectors, and several of them can travel
-together as a `sync` tuple.
+A *named vector* is a numeric array with one `names` entry per value; joint
+states and targets are named vectors. Each stream requires its keys, and a
+consumer fails loudly without them.
 
 | stream | payload | required metadata |
 | --- | --- | --- |
@@ -154,25 +138,23 @@ together as a `sync` tuple.
 | depth | `uint16[w*h]` millimetres | `encoding` (`uint16`), `width`, `height`, `capture_time`; `camera` |
 | joint state | `float64[n]` measured positions (a named vector) | `names` (n), `capture_time` |
 | joint target | `float64[n]` position setpoints (a named vector) | `names` (n), `capture_time` |
+| pose target | `float64[7]` `[x, y, z, qx, qy, qz, qw]`: the pose of URDF frame `frame` in URDF frame `reference` | `frame`, `reference`, `capture_time` |
 
-Static facts about a stream stay out of its messages. A camera's calibration
-(its frame, extrinsics and intrinsics) is an input from the calibration
-process, a file per cell (`assets/cells/<cell>/calibration.yaml`), which a
-consumer reads by config and looks up by the message's `camera`.
-
-Consumers never parse meaning out of input or output ids: an id is just the
-name a dataflow wires. Robot streams are per *part* (a named
-set of joints: an arm, a gripper, ...), and their ids follow one naming
-convention so dataflows read alike:
+Static facts stay out of messages: a camera's calibration is a file per cell
+(`assets/cells/<cell>/calibration.yaml`), looked up by the message's `camera`.
+Nodes never read meaning from ids; ids just follow one convention, per *part*
+(an arm, a gripper):
 
 | id | payload | direction |
 | --- | --- | --- |
 | `<part>_joint_state` | `float64[n]` measured joint positions | robot/sim → consumers |
 | `joint_target` | joint position setpoints for any joints of the robot: a named vector (`names` says which) | controller → robot/sim, `queue_size: 1, queue_policy: drop_oldest`; one input for the whole robot |
+| `pose_target` | a pose target (`frame` says which frame) | controller → pink |
 | `node_state` / `<name>_node_state` | `utf8[1]` token (`ready`, `finished`, `disconnect`) | every node → manager, edge-triggered |
 | `program_state` | `utf8[1]` (`boot`, `running`, `disconnect`) | manager → every node |
 
-Poses come with the `pink` node's IK mode.
+Poses name their frames by URDF link, so every node that loads the URDF reads
+them the same way.
 
 ### Robot control
 
@@ -228,6 +210,8 @@ dataflows/                         # runnable programs, one directory each
       mujoco_web_rerun.yml         # UR10e sim driven from a web page through the safety filter, recorded + viewed in rerun
     mujoco_web_rerun_depth/
       mujoco_web_rerun_depth.yml   # the same, with depth images from the RGB-D cameras
+    mujoco_web_pose/
+      mujoco_web_pose.yml          # the same robot driven by its TCP pose (jogged on the page), IK in pink
   teleoperation/                   # planned
     <robot family>/                # e.g. trossen
       <robot name>/                # e.g. trossen_stationary
@@ -277,14 +261,14 @@ when all three are checked.
 | `manager` | State machine that collects `node_state` tokens and emits `program_state`. `simple` mode: `boot` → `running` → `disconnect`. | - | x | x |
 | `opencv_camera` | Publishes frames from an OpenCV capture (webcam or file) as `<name>_image` at the configured FPS, rgb8 or jpeg. | - | x | x |
 | `realsense-camera` | Intel RealSense color + optional depth. | - | - | - |
-| `pink` | Robot kinematics on the URDF with **pink** (on Pinocchio + Coal), one IK step per input. `joints` mode: a safety filter answering each step's target (joined with its observation by `sync`) with a command within the velocity and joint limits, kept off the robot itself and the table by a collision barrier. Planned: a pose (IK) mode. Simulator-independent; reads the scene file. | - | x | - |
-| `mujoco` | **MuJoCo** sim of an MJCF, in real time, the only clocked node: captures on each tick: `joint_target` in (a named vector), `<part>_joint_state` (URDF joint names) and MJCF camera images (built from the cell's calibration) out, all of one instant; physics and rendering on background threads. | - | x | - |
-| `sync` | Joins streams into one message, a *tuple* (an Arrow struct, a field per input; their metadata as `<input>.<key>`). `tuple` mode: the moment every input has a new message. `align` mode: per reference message, every input's sample captured nearest it, for aligned observations (cameras + state for a policy or recorder). `step` mode: the messages of one `step`, e.g. an observation and the target answering it; a tuple input joins in flat. Dora has no built-in join. | - | x | x |
+| `pink` | IK on the URDF with **pink**: answers each step's joint or pose targets with a command one step toward them, speed-limited and collision-free. | - | x | - |
+| `mujoco` | **MuJoCo** sim: `joint_target` in, joint states and camera images of one instant out on each tick. `sim` mode runs in real time, `step` mode one fixed period per tick. | - | x | - |
+| `sync` | Joins streams into one *tuple* (an Arrow struct, a field per input). `tuple`: when every input has a new message. `align`: every input's sample nearest a reference time (observations). `step`: the messages of one `step`. | - | x | x |
 | `trossen-robot` | The **real** Trossen robot, **one arm per node** (`NAME`+`IP`, `MODE`=follower/leader; `base` mode TODO for the `trossen-slate` mobile base): a follower streams per-part `joint_target` from pink (joint control only); a leader publishes its hand-moved state. | - | - | - |
 | `ur5e-robot` | The **real** UR5e, **one arm per node** (`NAME`+`IP`): servoJ streaming of per-part `joint_target` with joint-jump guards; optional Robotiq gripper. | - | - | - |
 | `lerobot` | Records cameras + the `state` bundle + the `command` bundle into a `LeRobotDataset` (with video). | - | - | - |
-| `rerun` | One node, two modes: `record` writes every stream to an `.rrd` (cameras as H.264 video) and serves it live over gRPC (cameras as JPEG, ~6 ms behind capture), dispatching on message metadata: named joint plots per part, an optional URDF robot in 3D (`rerun.urdf.UrdfTree`) moved by joint states, cameras placed in it from a calibration file, its model written once as a shared asset and its forward kinematics as a layer; `visualize` opens a viewer on that server, locally or from another machine. | - | x | x |
-| `web_controller` | A web page (FastAPI + WebSocket, plain JS). `joint` mode: sliders and +/- per joint of every part it sees, closed-loop on the observation tuple, answers each one with a `joint_target` for all parts (carrying its `step`), Disconnect button. Planned: `cartesian` (needs pink), `episode`. | - | x | - |
+| `rerun` | `record` writes every stream to an `.rrd` (cameras as H.264) and serves it live: joint plots, the URDF robot in 3D with its cameras and poses. `visualize` opens a viewer on that server. | - | x | x |
+| `web_controller` | A web page answering each observation with a target. `joint` mode: a slider per joint. `pose` mode: jog buttons for the TCP pose. Planned: `episode`. | - | x | - |
 
 ## Roadmap
 

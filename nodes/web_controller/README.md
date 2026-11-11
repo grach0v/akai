@@ -1,84 +1,71 @@
 # web_controller
 
-Serves a web page to drive a robot and follow the program. The page talks to the
-node over a WebSocket; the node publishes what the page asks for into the
-dataflow. No build step: the page is one HTML file with plain JavaScript.
-
-## Layout
+Serves a web page to drive a robot. The page talks to the node over a
+WebSocket; the node answers every observation with the page's target. The page
+is one HTML file with plain JavaScript.
 
 ```
-pyproject.toml         # uv project: dora-rs, fastapi, uvicorn[standard], pydantic-settings
-src/config.py          # WebControllerConfig: node fields + `mode`, one config class per mode picked by MODE__NAME
-src/main.py            # dora skeleton, identical in every node: config -> mode -> Node -> loop
-src/server.py          # uvicorn on a background thread, shared by every mode
+src/config.py          # WebControllerConfig: node fields + `mode`, picked by MODE__NAME
+src/main.py            # dora skeleton, identical in every node
+src/server.py          # uvicorn on a background thread
 src/modes/joint.py     # `joint`: drive every part in joint space
-src/web/joint.html     # the `joint` page
+src/modes/pose.py      # `pose`: drive the TCP pose, the rest in joint space
+src/web/index.html     # the page
 ```
-
-The web server runs on its own thread with its own asyncio loop, started before
-the node joins the dataflow (a taken port fails right away). The dora loop and
-the page share the mode's state under a lock; only the dora loop sends outputs.
 
 ## `joint` mode
 
-Drive every robot part in joint space. The node answers every `observation`, a
-tuple (`akai_tuple`): each of its named vectors (`names` in their metadata) is a
-part's joint state, a card on the page labelled by the element's name, with a
-slider per joint bounded by that joint's limits in the robot's URDF (`urdf`; a
-joint without limits there raises). Every part's target goes out together, as one
-named vector `joint_target` (all parts' joint names in `names`) carrying the
-observation's `step`, so each target is the answer to one observation and a
-recording puts it on that observation's row.
+The node answers every `observation` tuple: each named vector in it is a part,
+shown as a card with a slider per joint (bounded by the URDF's limits). All
+parts' targets go out as one `joint_target` carrying the observation's `step`.
 
-- A part's target is seeded from its first measured state, so nothing jumps.
-- Targets are clamped to the joint limits.
-- A target is published for every observation, but only while the program is `running`.
-- Every program-state change resets the targets to the measured state, so a stale
-  target never drags the robot back.
-- The page's Disconnect button reports `disconnect` on `node_state`, which ends
-  the program in the manager.
+- Targets start at the measured state and reset to it on every program-state
+  change, so nothing jumps.
+- Targets go out only while the program is `running`.
+- Disconnect on the page ends the program.
 
-The page shows one card per part with a row per joint: measured value, a target
-slider over the joint range, −/+ buttons (`step` per click), and the target.
-"Sync to measured" sets every target to the measured position.
+| input | source | meaning |
+| --- | --- | --- |
+| `observation` | `sync` (`align`) | a tuple of joint states; `queue_size: 1, queue_policy: drop_oldest` |
+| `program_state` | `manager/program_state` | the node stops on `disconnect` |
 
-### Inputs
-
-| id                   | source                  | meaning |
-| -------------------- | ----------------------- | ------- |
-| `observation`        | `sync` (`align`)        | a tuple: its named vectors are the measured joints; answered with a target; `queue_size: 1, queue_policy: drop_oldest` |
-| `program_state`      | `manager/program_state` | shown on the page; targets go out only while `running`; the node stops on `disconnect` |
-
-### Outputs
-
-| id                    | payload      | metadata |
-| --------------------- | ------------ | -------- |
-| `joint_target` | `float64[Σn]`, every part's targets | `names` (every part's joint names, in the order the parts appeared), `step` (the observation's), `capture_time` |
-| `node_state`          | `utf8[1]`    | `ready` once serving, `disconnect` from the page's button |
-
-### WebSocket protocol (`/ws`)
-
-The server pushes, at `push_hz`:
-`{"program_state", "step", "parts": {part: {"names", "lower", "upper", "measured", "target"}}}`.
-The page sends `{"type": "set", "part", "index", "value"}`,
-`{"type": "nudge", "part", "index", "dir": ±1}`, `{"type": "sync"}` or
-`{"type": "disconnect"}`.
-
-### Config
+| output | payload | metadata |
+| --- | --- | --- |
+| `joint_target` | `float64[n]`, every part's targets | `names`, `step`, `capture_time` |
+| `node_state` | `utf8[1]` | `ready`, `disconnect` from the page |
 
 | var | default | meaning |
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | bind address; `0.0.0.0` serves other machines too |
 | `PORT` | `8000` | |
-| `SERVER_TIMEOUT` | `5` | seconds for the server to come up |
-| `MODE__NAME` | required | `joint` |
-| `MODE__URDF` | unset | the robot's URDF, relative to the dataflow directory: its joint limits bound the sliders |
-| `MODE__SCENE` | unset | a scene file giving `MODE__URDF` instead (its `urdf`); one of the two is required |
+| `MODE__NAME` | required | `joint` or `pose` |
+| `MODE__URDF` / `MODE__SCENE` | unset | the robot's URDF, or a scene file giving it |
 | `MODE__STEP` | `0.02` | one −/+ click, in the joint's unit |
 | `MODE__PUSH_HZ` | `15` | page refresh rate |
 
-Planned: a `cartesian` mode (end-effector targets, needs the pink node) and
-an `episode` mode (task + start/finish for recording).
+## `pose` mode
+
+Like `joint`, but the arm (the joints moving `frame`) gets jog buttons instead
+of sliders. While a button is held, every `tick` (the teleop clock) moves the
+target pose along the base's axes or about the tool's. Each observation is
+answered with a `pose_target` (the pose of `frame` in `reference`) and a
+`joint_target` for the other joints; pink turns them into a command.
+
+The target starts at the measured pose (forward kinematics of the measured
+joints) and stays within `max_lead` of it, so jogging past reach does not wind
+up.
+
+| extra input / output | meaning |
+| --- | --- |
+| `tick` | the teleop clock, a dora timer; `queue_size: 1, queue_policy: drop_oldest` |
+| `pose_target` | `float64[7]` `[x, y, z, qx, qy, qz, qw]`, with `frame`, `reference`, `step`, `capture_time` |
+
+| var | default | meaning |
+| --- | --- | --- |
+| `MODE__FRAME` | `tool0` | the URDF frame the pose drives (`tcp` for the TCP) |
+| `MODE__REFERENCE` | `base_link` | the URDF frame the pose is given in |
+| `MODE__LINEAR_SPEED` / `MODE__ANGULAR_SPEED` | `0.25` / `1.0` | jog speeds, m/s and rad/s |
+| `MODE__MAX_LEAD` / `MODE__MAX_LEAD_ANGLE` | `0.1` / `0.5` | how far the target may lead the measured pose, m and rad |
 
 ## Dataflow snippet
 
@@ -94,5 +81,5 @@ an `episode` mode (task + start/finish for recording).
     env:
       PORT: "8000"
       MODE__NAME: "joint"
-      MODE__URDF: "../../../assets/cells/ur10e_tabletop/ur10e_tabletop.urdf"
+      MODE__SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"
 ```

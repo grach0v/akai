@@ -99,6 +99,9 @@ class StepModeConfig(BaseModel):
     # The inputs to join; each needs `step` on every message. Each becomes a field of the tuple,
     # in this order, or several: an input that is a tuple is joined in flat. A JSON list in the env.
     inputs: list[str] = Field(min_length=1)
+    # The elements of the joined tuple to send on, in this order, so a consumer gets only what it
+    # uses (the joint states, not an observation's images). None: every element. A JSON list in the env.
+    elements: list[str] | None = Field(None, min_length=1)
     # Output id of the tuple.
     output: str
     # What to do with a step some input never sent, dropped once a newer one completes:

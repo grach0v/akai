@@ -20,6 +20,8 @@ is unpacked into its elements, `<input>/<field>`, each with its own metadata (th
     encoding rgb8 / jpeg      -> file: rr.VideoStream (H.264), live: rr.EncodedImage
     encoding uint16           -> rr.DepthImage (millimetres)
     numeric, in joint_states  -> rr.Scalars, and the 3D robot's joints (with `robot_urdf`)
+    numeric, with `frame`     -> a pose [x, y, z, qx, qy, qz, qw] in the URDF frame `reference`:
+                                 axes in 3D (with `robot_urdf`), see `_log_pose`
     anything else numeric     -> rr.Scalars, series named by `names`
 
 Every message is logged at its time by `input_time`, on a timeline of that name: dora's send
@@ -184,16 +186,20 @@ def log_calibration(recordings: list[rr.RecordingStream], stream: str, cal: Came
 
 
 def build_blueprint(
-    cameras: list[str], calibrated: list[str], robot: str | None, plots: dict[str, list[str]]
+    cameras: list[str],
+    calibrated: list[str],
+    poses: list[str],
+    robot: str | None,
+    plots: dict[str, list[str]],
 ) -> rrb.Blueprint:
-    """The cameras in a grid and the 3D robot (with the calibrated cameras in their frustums) on
-    top, the plots below: every stream visible at once, where the automatic
+    """The cameras in a grid and the 3D robot (with the calibrated cameras in their frustums and
+    the poses' axes) on top, the plots below: every stream visible at once, where the automatic
     layout tends to surface just one."""
     top = []
     if cameras:
         top.append(rrb.Grid(*[rrb.Spatial2DView(origin=f"/{cam}", name=cam) for cam in cameras]))
     if robot is not None:
-        contents = [f"{robot}/**", *(f"/{cam}/**" for cam in calibrated)]
+        contents = [f"{robot}/**", *(f"/{s}/**" for s in [*calibrated, *poses])]
         top.append(rrb.Spatial3DView(origin=robot, contents=contents, name="robot"))
     if plots:
         views = [
@@ -254,6 +260,7 @@ class RecordMode:
         self._calibration = load_calibration(opts.calibration) if opts.calibration else {}  # by camera
         self._images: list[str] = []  # image and depth streams, in the order they appeared
         self._calibrated_size: dict[str, tuple[int, int]] = {}  # stream -> the size it is calibrated for
+        self._poses: list[str] = []  # pose streams, in the order they appeared
         self._blueprint = runpy.run_path(str(opts.blueprint))["blueprint"] if opts.blueprint else None
         self._named: set[str] = set()  # series entities whose line label is logged
         self._send_layout()
@@ -338,6 +345,9 @@ class RecordMode:
         else:
             if not (pa.types.is_integer(value.type) or pa.types.is_floating(value.type)):
                 raise ValueError(f"{stream}: {value.type} values without an `encoding`")
+            if "frame" in md:
+                self._log_pose(stream, data, md)
+                return
             if stream in self.opts.joint_states:
                 require(md, stream, "names")
             self._log_series(stream, data, md)
@@ -370,7 +380,9 @@ class RecordMode:
         blueprint = self._blueprint
         if blueprint is None and (self._images or self.robot is not None or self.opts.plots):
             robot = f"/{self.robot.root}" if self.robot else None
-            blueprint = build_blueprint(self._images, list(self._calibrated_size), robot, self.opts.plots)
+            blueprint = build_blueprint(
+                self._images, list(self._calibrated_size), self._poses, robot, self.opts.plots
+            )
         if blueprint is not None:  # else: the viewer's automatic layout
             for rec in (self.file, self.live):
                 rec.send_blueprint(blueprint)
@@ -401,6 +413,32 @@ class RecordMode:
         indexes, columns = update
         for rec in (self.fk, self.live):
             rec.send_columns(self.robot.transforms_entity, indexes=indexes, columns=columns)
+
+    def _log_pose(self, stream: str, data: np.ndarray, md: dict) -> None:
+        """A pose of the URDF frame `frame` in the frame `reference`, drawn as axes in the robot's
+        frames the way a camera is placed (`log_calibration`): `<stream>/pose` holds the transform
+        from `reference` to `<stream>_frame`, and the stream's axes sit in that frame."""
+        require(md, stream, "reference")
+        if len(data) != 7:
+            raise ValueError(f"{stream}: a pose is [x, y, z, qx, qy, qz, qw], got {len(data)} values")
+        child = f"{stream}_frame"
+        if stream not in self._poses:
+            self._poses.append(stream)
+            for rec in (self.file, self.live):
+                rec.log(
+                    stream, rr.CoordinateFrame(child), rr.TransformAxes3D(0.1, show_frame=True), static=True
+                )
+            if self._blueprint is None:
+                self._send_layout()
+            logger.info("record: %s (pose of %s in %s)", stream, md["frame"], md["reference"])
+        x, y, z, qx, qy, qz, qw = data.tolist()
+        transform = rr.Transform3D(
+            translation=[x, y, z],
+            quaternion=rr.Quaternion(xyzw=[qx, qy, qz, qw]),
+            parent_frame=md["reference"],
+            child_frame=child,
+        )
+        self._log_both(f"{stream}/pose", transform)
 
     def _log_series(self, stream: str, data: np.ndarray, md: dict) -> None:
         """A numeric vector. With `names`, every component is its own entity, `<stream>/<name>`, whose

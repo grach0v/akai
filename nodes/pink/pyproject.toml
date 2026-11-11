@@ -1,4 +1,4 @@
-# pink node — robot kinematics on the URDF with pink (on Pinocchio): a joint-target safety filter, later IK.
+# pink node — robot kinematics on the URDF with pink (on Pinocchio): IK toward joint and pose targets, safely.
 #
 # Not a package: `src/main.py` runs as a plain script under this venv:
 #   build: uv sync --project ../../../nodes/pink
@@ -8,7 +8,7 @@
 [project]
 name = "pink-node"
 version = "0.1.0"
-description = "Dora node filtering joint targets on the robot's URDF (limits, speed, collisions) with pink, Pinocchio and Coal."
+description = "Dora node moving the robot toward joint and pose targets on its URDF (IK, limits, speed, collisions) with pink, Pinocchio and Coal."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -16,12 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class SimModeConfig(BaseModel):
-    """`sim` mode: run the scene in real time, drive its parts, render its cameras."""
+class CameraConfig(BaseModel):
+    """What every mode renders: its cameras and how they go out."""
 
     model_config = ConfigDict(extra="forbid")  # a variable meant for another mode is a mistake
 
-    name: Literal["sim"] = "sim"
     # MJCF camera names to render and publish as `<camera>_image`. A JSON list in
     # the env: MODE__CAMERAS='["cam_overhead"]'. Empty: no renderer at all.
     cameras: list[str] = []
@@ -37,6 +36,12 @@ class SimModeConfig(BaseModel):
     # Wire format of `<camera>_image`: raw RGB bytes or JPEG.
     encoding: Literal["rgb8", "jpeg"] = "rgb8"
     jpeg_quality: int = Field(90, ge=1, le=100)
+
+
+class SimModeConfig(CameraConfig):
+    """`sim` mode: run the scene in real time, drive its parts, render its cameras."""
+
+    name: Literal["sim"] = "sim"
     # Simulated seconds per wall-clock second.
     realtime_factor: float = Field(1.0, gt=0)
     # When the physics falls further behind the wall clock than this (seconds of sim time),
@@ -44,7 +49,15 @@ class SimModeConfig(BaseModel):
     max_lag: float = Field(0.1, gt=0)
 
 
-ModeConfig = SimModeConfig  # union of the mode configs, discriminated by `name`
+class StepModeConfig(CameraConfig):
+    """`step` mode: advance the scene one period per tick, ahead of it, rendering on the way."""
+
+    name: Literal["step"] = "step"
+    # Simulated seconds per tick: the tick's interval (0.033 for dora/timer/millis/33).
+    period: float = Field(0.033, gt=0)
+
+
+ModeConfig = SimModeConfig | StepModeConfig  # discriminated by `name`
 
 
 class MujocoConfig(BaseSettings):

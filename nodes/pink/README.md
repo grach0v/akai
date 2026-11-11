@@ -1,53 +1,50 @@
 # pink
 
-Robot kinematics on the robot's URDF with [pink](https://github.com/stephane-caron/pink): every
-mode is one pink IK step per input, on the [Pinocchio](https://github.com/stack-of-tasks/pinocchio)
-model and its collision library Coal. Today one mode:
+IK on the robot's URDF with [pink](https://github.com/stephane-caron/pink)
+(Pinocchio + Coal), one IK step per input.
 
-- **`joints`** (default): a safety filter between a controller and the robot. Every incoming
-  target (with the observation it answers, joined by `sync`'s `step` mode) is answered at once with a command one IK step toward it, over the time since the
-  previous target: at most `speed_scale` × each joint's URDF velocity limit, within the joint
-  limits, and kept `min_distance` away from the robot itself and the cell (table, floor) by a collision barrier,
-  so near contact it slows down and slides along. A step that still collides, or has no solution,
-  is not taken: the last command is held and the reason logged once. A controller streams its
-  target (the web controller does, at 30 Hz); one sent once moves the robot one step.
+**`ik`** (default) sits between a controller and the robot. Each `step` tuple
+(the targets and the observation they answer, joined by `sync`) is answered at
+once with a command one IK step toward the targets. A target is either a joint
+target (`names`) or a pose target (`frame`, `reference`), told apart by their
+metadata. The command:
+
+1. starts from the measured joints,
+2. moves at most `speed_scale` × each joint's URDF velocity limit, within the
+   joint limits,
+3. stays `min_distance` away from the robot itself and the cell (table, floor),
+   slowing down near contact,
+4. is not taken if it still collides or has no solution: the last command is
+   held and the reason logged.
+
+Joints no target names are held loosely, so a pose moves them freely. An
+unreachable pose is approached as closely as the limits allow. A step takes
+~4–6 ms.
 
 ```
-src/config.py        # PinkConfig: URDF (or SCENE) + `mode`, picked by MODE__NAME
-src/main.py          # dora skeleton, identical in every node: config -> mode -> Node -> loop
+src/config.py        # PinkConfig: URDF (or SCENE) + `mode`
+src/main.py          # dora skeleton, identical in every node
 src/robot.py         # the URDF in Pinocchio: actuated joints, limits, collision pairs
-src/modes/joints.py  # `joints`: the filter, a pink posture task
+src/modes/ik.py      # `ik`
 ```
 
-## The robot model
+Collision meshes are replaced by their convex hulls (~400× faster distances).
+Pairs on the same or neighbouring joints are not checked; they touch by design.
 
-The URDF's actuated joints are the configuration; mimic joints (a gripper's linkage) follow their
-driver, as the URDF declares. Self-collision is checked between every pair of collision
-geometries except those on one joint or on neighbouring joints, which touch by design; a mimic
-joint counts as the joint it follows, so a linkage never collides with itself. Give it a cell's
-URDF (`assets/cells/`), and the table and floor in it, fixed to `world` like the robot's base, are
-collision geometry too. Collision meshes are replaced by their convex hulls, which makes distances
-~400× faster and smooth enough for the barrier; the UR meshes are nearly convex. The barrier acts
-on the closest `MODE__BARRIER_PAIRS` pairs only, and the final check on all of them. One step
-takes ~4 ms, mostly pink's barrier in Python.
-
-## Inputs and outputs (`joints`)
-
-| id | source | meaning |
-| --- | --- | --- |
-| `step` | `sync` (`step`) | one step's tuple: the target (element `MODE__TARGET`, a named vector of any of the URDF's actuated joints) and the observation answered by it (its named vectors are the measured joints, where the command starts); each one is answered with a command |
-| `program_state` | manager | `disconnect` stops the node |
-| output `joint_target` | | a named vector of every actuated joint, with `capture_time` and the tuple's `step` |
-| output `node_state` | | `ready` |
-
-## Config
+| id | meaning |
+| --- | --- |
+| input `step` | from `sync` (`step`): the targets (`MODE__TARGETS`) and the measured joints |
+| input `program_state` | `disconnect` stops the node |
+| output `joint_target` | every actuated joint, with `step` and `capture_time` |
+| output `node_state` | `ready` |
 
 | var | default | meaning |
 | --- | --- | --- |
-| `URDF` | unset | the robot's URDF, relative to the dataflow directory |
-| `SCENE` | unset | a scene file giving `URDF` instead |
-| `MODE__TARGET` | `joint_target` | the `step` tuple's element holding the target |
-| `MODE__SPEED_SCALE` | `0.5` | fraction of each joint's URDF velocity limit |
-| `MODE__MIN_DISTANCE` | `0.01` | distance (m) the barrier keeps between geometries |
-| `MODE__BARRIER_GAIN` | `1.0` | how fast that distance may be closed (per second, fraction of what is left) |
-| `MODE__BARRIER_PAIRS` | `16` | how many of the closest pairs the barrier acts on |
+| `URDF` / `SCENE` | unset | the robot's URDF, or a scene file giving it |
+| `MODE__TARGETS` | `["joint_target"]` | JSON list of the tuple's elements holding targets |
+| `MODE__POSITION_COST` / `MODE__ORIENTATION_COST` | `1.0` / `0.5` | weight of a pose's errors, per m and per rad |
+| `MODE__POSTURE_COST` | `0.001` | how firmly untargeted joints are held |
+| `MODE__SPEED_SCALE` | `0.8` | fraction of the URDF velocity limits |
+| `MODE__MIN_DISTANCE` | `0.01` | clearance kept, m |
+| `MODE__BARRIER_GAIN` | `5.0` | how fast that clearance may close, per second (at most 10) |
+| `MODE__BARRIER_PAIRS` | `16` | closest pairs the barrier acts on |

@@ -42,7 +42,24 @@ class JointModeConfig(BaseModel):
         return self
 
 
-ModeConfig = JointModeConfig  # union of the mode configs, discriminated by `name`
+class PoseModeConfig(JointModeConfig):
+    """`pose` mode: drive one frame's pose (the tool's) from the page, the other joints in joint space."""
+
+    name: Literal["pose"] = "pose"
+    # The URDF frame driven by the pose, and the frame the pose is given in (the robot's base).
+    frame: str = "tool0"
+    reference: str = "base_link"
+    # Jog speeds while a jog button is held: along the reference frame's axes, in m/s,
+    # and about the frame's own axes, in rad/s.
+    linear_speed: float = Field(0.25, gt=0)
+    angular_speed: float = Field(1.0, gt=0)
+    # How far the target may lead the measured pose, in m and rad, so a target jogged past what
+    # the robot can reach does not wind up.
+    max_lead: float = Field(0.1, gt=0)
+    max_lead_angle: float = Field(0.5, gt=0)
+
+
+ModeConfig = JointModeConfig | PoseModeConfig  # discriminated by `name`
 
 
 class WebControllerConfig(BaseSettings):

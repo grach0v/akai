@@ -1,30 +1,21 @@
-# mujoco_web_rerun with depth: both cameras also send depth images, aligned and recorded with the rest.
+# mujoco_web_rerun with depth: both cameras also send depth images, recorded with the rest.
 #
-# A simulated UR10e + 2F-85 driven in joint space from a web page, recorded to
-# .rrd and shown live, with the manager owning the lifecycle.
+# One cycle per tick (dora/timer/millis/33, the only robot clock):
+# 1. sim sends the joint states and images of one instant;
+# 2. observation (sync, align) joins them into obs_t;
+# 3. web answers obs_t with the operator's target_t;
+# 4. safety_step (sync, step) joins obs_t's joints and target_t;
+# 5. safety (pink) answers with command_t, speed-limited and collision-free, to the sim.
+# Every answer carries obs_t's `step`, so rerun_record logs one row per step. rerun_viewer shows it
+# live; the manager owns the lifecycle.
 #
-# One cycle per observation step t, every message after the observation carrying its `step`:
-#   dora/timer/millis/33 --> sim: the only clock; every other node runs on its inputs
-#   sim         --> capture t: joint states + images, one capture_time         --> observation
-#   observation --> obs_t: capture t as one tuple (sync, align on the arm's joint state)
-#                                                                              --> web, safety_step, rerun_record
-#   web         --> target_t: the operator's targets for both parts            --> safety_step, rerun_record
-#   safety_step --> obs_t and target_t as one tuple (sync, step)               --> safety
-#   safety      --> command_t: target_t speed-limited, collision-free (pink) --> sim, rerun_record
-#   rerun_record: one row per step t (obs_t, target_t, command_t); see docs/observation_cycle.excalidraw
-#   rerun_record  --> out/rrd/<app_id>_<time>.rrd  +  gRPC server :9876 (live)
-#   rerun_viewer  --> a rerun viewer on that server: cameras, the 3D robot, one plot per part
-#   manager       <-- every node's node_state; --> program_state --> every node
-#
-# Open http://127.0.0.1:8000 once the program is `running` and move the sliders.
-# The program ends (`disconnect`) on Ctrl-C, on the page's Disconnect button, or
-# when the operator closes the viewer window.
+# Open http://127.0.0.1:8000 once the program is `running`. Ctrl-C, the page's Disconnect button
+# or closing the viewer ends the program.
 #
 #   build: uv run dora build dataflows/examples/mujoco_web_rerun_depth/mujoco_web_rerun_depth.yml
 #   run:   uv run dora run   dataflows/examples/mujoco_web_rerun_depth/mujoco_web_rerun_depth.yml
 #
-# Headless Linux: add MUJOCO_GL: "egl" to the sim's env (macOS renders with CGL as is).
-# Node and asset paths are relative to this file's directory.
+# Headless Linux: add MUJOCO_GL: "egl" to the sim's env. Paths are relative to this file.
 
 nodes:
   - id: manager
@@ -49,15 +40,16 @@ nodes:
     path: ../../../nodes/mujoco/.venv/bin/python
     args: ../../../nodes/mujoco/src/main.py
     inputs:
-      # the observation clock: every tick the sim snapshots itself, renders, and sends joint states
-      # and frames of that one instant, as triggered cameras and a robot would
+      # the observation clock: every tick the sim sends the joint states and frames of one instant,
+      # one period after the previous; it advances and renders them as soon as the command comes
       tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
       program_state: manager/program_state
       joint_target: { source: safety/joint_target, queue_size: 1, queue_policy: drop_oldest }
     outputs: [arm_joint_state, gripper_joint_state, cam_overhead_image, cam_overhead_depth, cam_wrist_image, cam_wrist_depth, node_state]
     env:
       SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"
-      MODE__NAME: "sim"
+      MODE__NAME: "step"   # one 33 ms period per tick, advanced as soon as the command comes
+      MODE__PERIOD: "0.033"   # the tick's interval
       MODE__CAMERAS: '["cam_overhead", "cam_wrist"]'
       MODE__DEPTH: "true"   # both cameras are RGB-D in the calibration: ~37 MB/s of raw depth in the recording
       MODE__WIDTH: "640"
@@ -93,8 +85,8 @@ nodes:
     outputs: [joint_target, node_state]
     env:
       SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF
-      MODE__NAME: "joints"
-      MODE__TARGET: "joint_target"   # the tuple's element holding the target
+      MODE__NAME: "ik"
+      MODE__TARGETS: '["joint_target"]'   # the tuple's elements holding the targets
 
   - id: safety_step
     build: uv sync --project ../../../nodes/sync
@@ -108,6 +100,7 @@ nodes:
     env:
       MODE__NAME: "step"
       MODE__INPUTS: '["observation", "joint_target"]'
+      MODE__ELEMENTS: '["arm_joint_state", "gripper_joint_state", "joint_target"]'   # not the images
       MODE__OUTPUT: "step"
 
   - id: observation
@@ -128,7 +121,7 @@ nodes:
       MODE__REFERENCE: "arm_joint_state"   # one observation per sim capture, at its capture_time
       MODE__REFERENCE_TIME: "capture_time"
       MODE__INPUTS: '["cam_overhead_image", "cam_overhead_depth", "cam_wrist_image", "cam_wrist_depth", "arm_joint_state", "gripper_joint_state"]'
-      MODE__INPUT_TIME: "capture_time"   # when each sample was taken, not when it was sent (a tick later)
+      MODE__INPUT_TIME: "capture_time"   # when each sample was taken, not when it was sent (after the render)
       MODE__OUTPUT: "observation"
       MODE__MAX_SKEW: "0.02"   # the sim captures everything on the tick: more means it lags
 

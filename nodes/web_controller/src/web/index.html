@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Joint control</title>
+<title>Robot control</title>
 <style>
   :root {
     --bg: #f5f5f4; --card: #ffffff; --text: #1c1917; --muted: #78716c; --line: #e7e5e4;
@@ -50,11 +50,18 @@
   .pm { display: flex; gap: 4px; }
   .pm button { padding: 2px 10px; }
   .empty { color: var(--muted); padding: 32px 16px; text-align: center; }
+  .prow { display: grid; grid-template-columns: minmax(60px, 1fr) 72px 72px auto; gap: 8px; align-items: center;
+          padding: 6px 0; border-top: 1px solid var(--line); }
+  .prow.head { border-top: 0; padding: 0 0 4px; }
+  .jog { display: flex; gap: 4px; }
+  .jog button { padding: 2px 10px; min-width: 52px; touch-action: none; user-select: none; }
+  .jog button.held { border-color: var(--accent); color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Joint control</h1>
+  <h1>Robot control</h1>
   <div class="badges">
     <span id="link" class="badge offline">offline</span>
     <span id="program" class="badge">program: –</span>
@@ -74,6 +81,26 @@ let socket = null;
 let layout = "";           // parts + joint names the DOM was built for
 let dragging = null;       // slider being dragged: its target is not overwritten by pushes
 let step = 0.02;
+// pose jog: axes x, y, z (along the reference frame), then about the tool's x, y, z
+const AXES = ["x", "y", "z", "roll", "pitch", "yaw"];
+const held = new Map();    // jog button held -> [axis, dir]
+let jogSent = "";
+let hasPose = false;       // only `pose` mode jogs
+
+function sendJog() {
+  if (!hasPose) return;
+  const axes = [0, 0, 0, 0, 0, 0];
+  for (const [axis, dir] of held.values()) axes[axis] = dir;
+  const key = JSON.stringify(axes);
+  if (key === jogSent) return;
+  jogSent = key;
+  send({ type: "jog", axes });
+  for (const b of partsEl.querySelectorAll(".jog button"))
+    b.classList.toggle("held", axes[Number(b.dataset.axis)] === Number(b.dataset.dir));
+}
+function hold(button, axis, dir) { held.set(button, [axis, dir]); sendJog(); }
+function release(button) { if (held.delete(button)) sendJog(); }
+function releaseAll() { held.clear(); sendJog(); }
 
 function send(msg) {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
@@ -81,10 +108,41 @@ function send(msg) {
 
 function fmt(v) { return v.toFixed(3); }
 
-function build(parts) {
+function buildPose(pose) {
+  const card = document.createElement("section");
+  card.className = "card";
+  card.id = "pose";
+  card.innerHTML = `<h2>${pose.frame} in ${pose.reference}</h2>
+    <div class="prow head"><span>axis</span><span class="num">measured</span><span class="num">target</span>
+    <span>jog (hold)</span></div>`;
+  AXES.forEach((axis, i) => {
+    const row = document.createElement("div");
+    row.className = "prow";
+    row.innerHTML = `<span class="name">${axis}</span><span class="num measured" data-measured></span>
+      <span class="num" data-target></span><span class="jog">
+      <button data-axis="${i}" data-dir="-1" aria-label="${axis} minus">−</button>
+      <button data-axis="${i}" data-dir="1" aria-label="${axis} plus">+</button></span>`;
+    for (const b of row.querySelectorAll("button")) {
+      const dir = Number(b.dataset.dir);
+      b.addEventListener("pointerdown", (e) => { b.setPointerCapture(e.pointerId); hold(b, i, dir); });
+      for (const end of ["pointerup", "pointercancel", "lostpointercapture"])
+        b.addEventListener(end, () => release(b));
+    }
+    card.appendChild(row);
+  });
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Hold a button to move the target: x, y, z along the base, roll, pitch, yaw about the tool.";
+  card.appendChild(hint);
+  partsEl.appendChild(card);
+}
+
+function build(parts, pose) {
   partsEl.replaceChildren();
+  held.clear();
   const names = Object.keys(parts);
-  if (names.length === 0) {
+  if (pose) buildPose(pose);
+  if (names.length === 0 && !pose) {
     partsEl.innerHTML = '<div class="empty">Waiting for joint states…</div>';
     return;
   }
@@ -126,9 +184,17 @@ function render(snap) {
   const program = snap.program_state || "–";
   programEl.textContent = `program: ${program}`;
   programEl.className = `badge ${program}`;
-  const key = JSON.stringify(Object.entries(snap.parts).map(([k, p]) => [k, p.names]));
-  if (key !== layout) { build(snap.parts); layout = key; }
-  for (const card of partsEl.querySelectorAll(".card")) {
+  const key = JSON.stringify([Object.entries(snap.parts).map(([k, p]) => [k, p.names]), !!snap.pose]);
+  if (key !== layout) { hasPose = !!snap.pose; build(snap.parts, snap.pose); layout = key; }
+  if (snap.pose) {
+    const rows = partsEl.querySelectorAll("#pose .prow:not(.head)");
+    const show = (v, i) => (i < 3 ? v.toFixed(3) : `${(v * 180 / Math.PI).toFixed(1)}°`);
+    rows.forEach((row, i) => {
+      row.querySelector("[data-measured]").textContent = show(snap.pose.measured[i], i);
+      row.querySelector("[data-target]").textContent = show(snap.pose.target[i], i);
+    });
+  }
+  for (const card of partsEl.querySelectorAll(".card:not(#pose)")) {
     for (const row of card.querySelectorAll(".row:not(.head)")) {
       const slider = row.querySelector("input");
       const p = snap.parts[slider.dataset.part];
@@ -142,7 +208,10 @@ function render(snap) {
 
 function connect() {
   socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  socket.onopen = () => { linkEl.textContent = "connected"; linkEl.className = "badge running"; };
+  socket.onopen = () => {
+    linkEl.textContent = "connected"; linkEl.className = "badge running";
+    jogSent = ""; sendJog();
+  };
   socket.onmessage = (e) => render(JSON.parse(e.data));
   socket.onclose = () => {
     linkEl.textContent = "offline"; linkEl.className = "badge offline";
@@ -151,6 +220,8 @@ function connect() {
 }
 
 document.getElementById("sync").addEventListener("click", () => send({ type: "sync" }));
+window.addEventListener("blur", releaseAll);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
 document.getElementById("disconnect").addEventListener("click", () => {
   if (confirm("Disconnect ends the program for every node. Continue?")) send({ type: "disconnect" });
 });

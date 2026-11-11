@@ -472,4 +472,10 @@
     <child link="robotiq_85_base_link" />
     <origin xyz="0 0 0.008" rpy="0 0 3.141592653589793" />
   </joint>
+  <link name="tcp" />
+  <joint name="tool0-tcp" type="fixed">
+    <parent link="tool0" />
+    <child link="tcp" />
+    <origin xyz="0 0 0.156" rpy="0 0 0" />
+  </joint>
 </robot>

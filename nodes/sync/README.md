@@ -1,23 +1,15 @@
 # sync
 
-Joins several streams into one message, a *tuple*, for a consumer that needs
-them together: a policy or recorder taking an observation of cameras and robot
-state, a robot taking all its parts' targets at once. Dora has no built-in join.
-The node assumes nothing about what the inputs carry. Three modes decide which
-messages go together:
+Joins several streams into one message, a *tuple* (dora has no built-in join).
+Three modes decide which messages go together:
 
-1. **`tuple`**: the newest message of each input, as soon as every input has a
-   new one. For commands, where only the latest counts.
-2. **`align`**: per reference time (a timer tick, or a capture of the clocked producer), every
-   input's sample nearest it in time. For observations, where the elements must
-   show the same instant however late each one is delivered.
-3. **`step`**: the messages of every input with the same `step`. For joining an
-   observation with what answers it (a target), so a consumer gets both of one step.
+1. **`tuple`**: the newest message of each input, once every input has a new one.
+2. **`align`**: every input's sample nearest a reference time: observations.
+3. **`step`**: the messages with the same `step`: an observation and its answer.
 
 ```
-pyproject.toml         # uv project; the `examples` group adds the node-hub nodes the examples use
-src/config.py          # SyncConfig: `mode`, one config class per mode picked by MODE__NAME
-src/main.py            # dora skeleton, identical in every node: config -> mode -> Node -> loop
+src/config.py          # SyncConfig: `mode`, picked by MODE__NAME
+src/main.py            # dora skeleton, identical in every node
 src/bundler.py         # `tuple` mode's rules: when a tuple goes out, repeats, skew
 src/modes/tuple.py     # `tuple` mode
 src/modes/align.py     # `align` mode
@@ -27,24 +19,13 @@ examples/              # test dataflows: sync with dora's timers and node-hub no
 
 ## The tuple output type
 
-Every mode emits the same message, values and metadata apart as in every dora
-message:
-
-1. **Value:** a one-row Arrow struct with a field per input, named by its id, in
-   `inputs` order, holding that input's array, e.g.
-   `struct<cam_high: list<uint8>, arm_joint_state: list<double>>`. A consumer
-   reads its elements with `akai_tuple.elements(value, metadata)`
-   ([`libs/akai_tuple`](../../libs/akai_tuple), the format's code).
-2. **Metadata:** every key of every input's metadata as `<input id>.<key>`
-   (`cam_high.encoding`, `arm_joint_state.names`, `cam_high.timestamp`: dora's
-   send time), plus the tuple's own `capture_time` and `step` (0, 1, 2, ...: its
-   index, which every node answering the tuple copies onto what it sends, so a
-   recording puts them on the tuple's row; `step` mode keeps its inputs'). Nothing
-   is converted or dropped.
-3. **Tuples join flat:** an input that is a tuple itself gives its elements, under
-   their own names and metadata, not one nested field; its own keys go out as
-   `<input id>.<key>`. Element names must not repeat. Dora's metadata is flat, hence one key per input and key, and an
-   input id may not contain a `.`.
+1. **Value:** a one-row Arrow struct, a field per input named by its id, e.g.
+   `struct<cam_high: list<uint8>, arm_joint_state: list<double>>`. Read it with
+   `akai_tuple.elements(value, metadata)` ([`libs/akai_tuple`](../../libs/akai_tuple)).
+2. **Metadata:** every input's keys as `<input id>.<key>`, plus the tuple's own
+   `capture_time` and `step` (its index, copied by every answer to it).
+3. **Tuples join flat:** an input that is a tuple gives its elements, not one
+   nested field. Element names must not repeat.
 
 Inputs: every id in `inputs`, and `program_state` (the node stops on
 `disconnect`). Outputs: `<output>` (the tuple) and `node_state` (`ready`).
@@ -53,9 +34,8 @@ Inputs: every id in `inputs`, and `program_state` (the node stops on
 `max_skew` is set, and handle it as `on_skew` says: `ignore`, `warn` or `error`
 (stop the node).
 
-Every `*_TIME` setting names a metadata key holding a time: a datetime, like
-dora's send `timestamp`, or seconds since the epoch, like `capture_time` (or a
-key of your own).
+Every `*_TIME` setting names a metadata key holding a time: dora's `timestamp`
+or seconds since the epoch, like `capture_time`.
 
 ## `tuple` mode
 
@@ -95,16 +75,14 @@ key of your own).
    `max_skew` is reported, naming its elements.
 5. Until every input has sent once, reference times are dropped.
 
-Aligned by `capture_time`, a camera whose frames arrive 25 ms after they were
-taken still lines up with the joint states captured at the same instant:
-delivery delay costs latency, not alignment. By send `timestamp` it would be
-paired with whatever was sent at the tick. Give the inputs deep queues (`queue_size: 100`): the node chooses
-among samples rather than taking the newest.
+Aligned by `capture_time`, a late camera frame still lines up with the joint
+states of its instant. Give the inputs deep queues (`queue_size: 100`): the node
+chooses among samples.
 
 | var | default | meaning |
 | --- | --- | --- |
 | `MODE__NAME` | required | `align` |
-| `MODE__REFERENCE` | required | the input whose messages give the reference times: a timer, or the clocked producer's own stream (e.g. the robot's joint state, `MODE__REFERENCE_TIME: capture_time`); it may also be one of `MODE__INPUTS` |
+| `MODE__REFERENCE` | required | the input giving the reference times: a timer, or the robot's joint state; may be one of `MODE__INPUTS` |
 | `MODE__REFERENCE_TIME` | `timestamp` | metadata key of a reference message's time (a timer only has `timestamp`) |
 | `MODE__INPUTS` | required | JSON list of the input ids to align, in field order |
 | `MODE__INPUT_TIME` | `timestamp` | metadata key of an input message's time (required on every message) |
@@ -133,25 +111,22 @@ For example, an observation aligned to the observation clock the sim ticks on:
 
 ## `step` mode
 
-1. Every message needs `step`: an observation's index, or a message answering
-   it, which copies it (a controller's target).
-2. Once every input has sent a message with the same step, a tuple of them goes
-   out at once, with that `step`, and the oldest `capture_time` when they all
-   have one.
-3. A step some input never sent is dropped when a newer one completes, and a
-   message for a step older than the last tuple's is dropped too, both handled
-   as `on_drop` says. At most `max_pending` incomplete steps wait.
+1. Every message needs `step`.
+2. Once every input has sent the same step, their tuple goes out at once.
+3. Incomplete steps are dropped when a newer one completes (`on_drop`).
+4. `elements` picks which elements go on, so a consumer gets only what it uses.
 
 | var | default | meaning |
 | --- | --- | --- |
 | `MODE__NAME` | required | `step` |
 | `MODE__INPUTS` | required | JSON list of the input ids to join, in field order |
+| `MODE__ELEMENTS` | every element | JSON list of the joined tuple's elements to send on, in order |
 | `MODE__OUTPUT` | required | output id of the tuple |
 | `MODE__ON_DROP` | `warn` | `ignore`, `warn` (per dropped step) or `error` |
 | `MODE__MAX_PENDING` | `30` | incomplete steps kept waiting |
 
-For example, the observation and the operator's target answering it, for the
-safety filter, which then gets the measured joints and the target of one step:
+For example, the joint states of an observation and the target answering it,
+for pink:
 
 ```yaml
     inputs:
@@ -161,14 +136,14 @@ safety filter, which then gets the measured joints and the target of one step:
     env:
       MODE__NAME: "step"
       MODE__INPUTS: '["observation", "joint_target"]'
+      MODE__ELEMENTS: '["arm_joint_state", "gripper_joint_state", "joint_target"]'
       MODE__OUTPUT: "step"
 ```
 
 ## Examples
 
-The dataflows in `examples/` use nothing of ours but sync: dora's timers and the
-node-hub nodes `pyarrow-sender` and `pyarrow-assert` (installed by their build
-step). Each is a test: a run that ends with exit code 1 has failed.
+Test dataflows using only sync, dora's timers and node-hub nodes; exit code 1
+means failed.
 
 1. `tuple_test.yml`: two senders send one fixed array each; `pyarrow-assert`
    checks the tuple. It ends by itself.

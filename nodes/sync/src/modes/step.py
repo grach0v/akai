@@ -5,7 +5,7 @@ controller's target). Once every input has sent a message with the same step, on
 goes out, with that `step`, and the `capture_time` of the oldest when they all have one. An
 input that is a tuple itself (an observation) is joined in flat: its elements become the new
 tuple's (`akai_tuple.build`), so a consumer gets one level, e.g. an observation's joint states
-and images next to the target answering it.
+and images next to the target answering it. `elements`, when set, picks which of them go on.
 
 A step some input never sent is dropped once a newer one completes, handled as `on_drop` says;
 a message for a step older than the last tuple's is dropped the same way. At most `max_pending`
@@ -21,7 +21,7 @@ import logging
 from collections.abc import Callable
 
 import pyarrow as pa
-from akai_tuple import build
+from akai_tuple import build, select
 from dora import Node
 
 from bundler import report
@@ -88,6 +88,8 @@ class StepMode:
         events = [pending[i] for i in self.opts.inputs]
         self._last = step
         values, metadata = build(self.opts.inputs, events)
+        if self.opts.elements is not None:
+            values, metadata = select(values, metadata, self.opts.elements)
         captured = [e["metadata"].get("capture_time") for e in events]
         if all(t is not None for t in captured):
             metadata["capture_time"] = min(captured)
@@ -95,7 +97,8 @@ class StepMode:
         self.node.send_output(self.opts.output, values, metadata=metadata)
 
     def _drop(self, step: int) -> None:
-        missing = [i for i in self.opts.inputs if i not in self._pending.pop(step)]
+        pending = self._pending.pop(step)
+        missing = [i for i in self.opts.inputs if i not in pending]
         report(logger, self.opts.on_drop, f"step {step} dropped: no message from {missing}")
 
     def _set_state(self, state: str) -> None:

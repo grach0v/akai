@@ -1,26 +1,14 @@
-"""`joints` mode — the default: pass joint targets on to the robot, safely.
+"""`ik` mode — the default: move the robot toward its targets, safely.
 
-Every incoming `step` tuple (sync's `step` mode: one observation step's measured joint states and
-the target answering it, element `target`) is answered at once with the `joint_target` sent (the
-command): one pink IK step from the last command toward the target, over the time since the
-previous one (capped at 0.1 s). The step is a posture task on the target, solved under
-
-1. each joint's URDF velocity limit times `speed_scale`, so a streamed target is speed-limited,
-2. the joint limits,
-3. a collision barrier (with itself and whatever else the URDF holds, a cell's table and floor):
-   the robot slows down near contact and keeps `min_distance`, sliding along rather than
-   stopping. It acts on the `barrier_pairs` closest pairs.
-
-The barrier is not a hard guarantee at one step per target, so a step that still collides, or
-that the solver finds no solution for, is not taken: the last command is held and the reason
-reported once.
-
-The command starts from the measured joint states (the tuple's other named vectors), so the
-first one does not jump, and carries the tuple's `step`.
+Every `step` tuple (the measured joints and the targets answering them, joined by sync) is
+answered at once with a command one IK step toward the targets. A target is a joint target
+(`names`) or a pose target (`frame`, `reference`: `[x, y, z, qx, qy, qz, qw]`). Joints no joint
+target names are held loosely, so a pose moves them freely. The step respects the URDF velocity
+limits times `speed_scale`, the joint limits, and a collision barrier; a step that still
+collides, or has no solution, is not taken and the last command is held.
 
 Inputs:  step (a tuple), program_state.
-Outputs: joint_target (a named vector of every actuated joint, with `capture_time` and the
-         tuple's `step`), node_state.
+Outputs: joint_target (every actuated joint, with the tuple's `step`), node_state.
 """
 
 from __future__ import annotations
@@ -38,7 +26,7 @@ from dora import Node
 from pink.barriers import SelfCollisionBarrier
 from pink.exceptions import NoSolutionFound
 from pink.limits import ConfigurationLimit, VelocityLimit
-from pink.tasks import PostureTask
+from pink.tasks import FrameTask, PostureTask
 
 from config import PinkConfig
 from robot import Robot
@@ -46,7 +34,7 @@ from robot import Robot
 logger = logging.getLogger("pink")
 
 
-class JointsMode:
+class IkMode:
     def __init__(self, cfg: PinkConfig):
         """Load the robot model and set up the IK problem before joining the dataflow."""
         self.opts = cfg.mode
@@ -65,17 +53,22 @@ class JointsMode:
                 n_collision_pairs=min(self.opts.barrier_pairs, len(self.robot.geom.collisionPairs)),
                 gain=self.opts.barrier_gain,
                 d_min=self.opts.min_distance,
+                # pink's default also pulls every step toward standing still, which outweighs a
+                # pose task; the barrier's constraint is what keeps the robot safe
+                safe_displacement_gain=0.0,
             )
         ]
         self._ik: pink.Configuration | None = None  # at the last command
-        self._target: np.ndarray | None = None  # what is asked for
+        self._target: np.ndarray | None = None  # the joint targets
+        self._driven = np.zeros(model.nq, dtype=bool)  # joints some joint target has named
+        self._poses: dict[str, FrameTask] = {}  # frame -> its task, at the latest pose target
         self._held: str | None = None  # why the command is held, if it is
         self._last_target: float | None = None  # when the previous target arrived (monotonic)
         self._handlers: dict[str, Callable[[dict], bool]] = {
             "step": self._on_step,
             "program_state": self._on_program_state,
         }
-        logger.info("joints: %s, %d collision pairs", self.robot.names, len(self.robot.geom.collisionPairs))
+        logger.info("ik: %s, %d collision pairs", self.robot.names, len(self.robot.geom.collisionPairs))
 
     # -- node protocol -------------------------------------------------------
 
@@ -93,24 +86,25 @@ class JointsMode:
     # -- inputs --------------------------------------------------------------
 
     def _on_step(self, event: dict) -> bool:
-        """Update the joints the target names (the others keep their last target), and send the
-        command one step toward it."""
-        target, measured = None, {}
+        """Take the step's targets, and send the command one step toward them."""
+        targets, measured = [], {}
         for name, array, md in elements(event["value"], event["metadata"]):
-            if name == self.opts.target:
-                target = (md["names"], array.to_pylist())
+            if name in self.opts.targets:
+                targets.append((name, array.to_numpy(zero_copy_only=False), md))
             elif "names" in md:
                 measured.update(zip(md["names"], array.to_pylist()))
-        if target is None:
-            raise ValueError(f"step: the tuple has no element {self.opts.target!r}, the target")
+        missing = [t for t in self.opts.targets if t not in [name for name, _, _ in targets]]
+        if missing:
+            raise ValueError(f"step: the tuple has no target element {missing}")
         if self._ik is None and not self._start(measured):
             return False
-        names, values = target
-        unknown = [n for n in names if n not in self._index]
-        if unknown:
-            raise ValueError(f"joint_target: the URDF has no actuated joint {unknown}")
-        for name, value in zip(names, values):
-            self._target[self._index[name]] = value
+        for name, values, md in targets:
+            if "frame" in md:
+                self._set_pose(name, values, md)
+            elif "names" in md:
+                self._set_joints(name, values, md["names"])
+            else:
+                raise ValueError(f"{name}: a target needs `names` (joints) or `frame` (a pose)")
         now = time.monotonic()
         dt = None if self._last_target is None else min(now - self._last_target, 0.1)
         self._last_target = now
@@ -129,7 +123,7 @@ class JointsMode:
         """Start the command and the target at the measured joints, once every joint is measured."""
         missing = [n for n in self.robot.names if n not in measured]
         if missing:
-            logger.warning("joints: ignoring a target, no measured state yet for %s", missing)
+            logger.warning("ik: ignoring a target, no measured state yet for %s", missing)
             return False
         q = np.clip([measured[n] for n in self.robot.names], self.robot.lower, self.robot.upper)
         self._ik = pink.Configuration(
@@ -142,12 +136,39 @@ class JointsMode:
         self._target = q.copy()
         return True
 
+    def _set_joints(self, element: str, values: np.ndarray, names: list[str]) -> None:
+        unknown = [n for n in names if n not in self._index]
+        if unknown:
+            raise ValueError(f"{element}: the URDF has no actuated joint {unknown}")
+        index = [self._index[n] for n in names]
+        self._target[index] = values
+        self._driven[index] = True
+
+    def _set_pose(self, element: str, values: np.ndarray, md: dict) -> None:
+        """The frame's task, at the pose given in its reference frame (a pose of the model's world)."""
+        frame, reference = md["frame"], md["reference"]
+        for f in (frame, reference):
+            if not self.robot.model.existFrame(f):
+                raise ValueError(f"{element}: the URDF has no frame {f!r}")
+        if len(values) != 7:
+            raise ValueError(f"{element}: a pose is [x, y, z, qx, qy, qz, qw], got {len(values)} values")
+        task = self._poses.get(frame)
+        if task is None:
+            task = self._poses[frame] = FrameTask(
+                frame, position_cost=self.opts.position_cost, orientation_cost=self.opts.orientation_cost
+            )
+            logger.info("ik: pose target for %s in %s", frame, reference)
+        world_reference = self._ik.get_transform_frame_to_world(reference)
+        task.set_target(world_reference * pin.XYZQUATToSE3(values))
+
     def _step(self, dt: float) -> None:
-        """Move the command one IK step toward the target, unless that step is unsafe."""
-        self._posture.set_target(self._target)
+        """Move the command one IK step toward the targets, unless that step is unsafe."""
+        self._posture.set_target(np.where(self._driven, self._target, self._ik.q))
+        self._posture.cost = np.where(self._driven, 1.0, self.opts.posture_cost)
+        tasks = [self._posture, *self._poses.values()]
         try:
             v = pink.solve_ik(
-                self._ik, [self._posture], dt, solver="daqp", limits=self._limits, barriers=self._barriers
+                self._ik, tasks, dt, solver="daqp", limits=self._limits, barriers=self._barriers
             )
         except NoSolutionFound:
             return self._hold("no IK solution")
@@ -156,13 +177,13 @@ class JointsMode:
         if collisions:
             return self._hold(f"the next step collides: {collisions[0]}")
         if self._held is not None:
-            logger.info("joints: moving again")
+            logger.info("ik: moving again")
             self._held = None
         self._ik.update(q)
 
     def _hold(self, reason: str) -> None:
         if self._held != reason:
-            logger.warning("joints: holding, %s", reason)
+            logger.warning("ik: holding, %s", reason)
         self._held = reason
 
     def _set_state(self, state: str) -> None:

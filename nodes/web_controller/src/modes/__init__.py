@@ -7,13 +7,13 @@ Every mode implements the node protocol that main.py drives:
 3. `handle(event) -> bool`: handle one INPUT event; True stops the node.
 4. `close()`: release the resources; called however the loop ends.
 
-TODO: once the node has more than one mode, add an abstract base class `Mode`
-(`abc.ABC`, these four methods abstract) that every mode subclasses, so the protocol
-is explicit and a mode missing one fails when it is built, not mid-run.
+`pose` mode extends `joint` mode (its board, page and answers).
 """
 
 from modes.joint import JointMode
+from modes.pose import PoseMode
 
 MODES = {
     "joint": JointMode,
+    "pose": PoseMode,
 }

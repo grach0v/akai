@@ -62,81 +62,45 @@ Measured with rerun 0.39, 30 fps, on a 10-core Mac (median, capture to screen):
 ffmpeg can get down to one frame of lag (`-threads 1` or slice threading), but
 rerun hard-codes its decoder flags. If that changes, switch to H.264 everywhere.
 
-A *stream* is an input, or one element of a `sync` tuple input: a tuple (an
-Arrow struct) is unpacked into its elements, named `<input>/<field>`, each with
-its own metadata (the tuple's `<field>.<key>` keys). Its metadata says what it
-holds; other numeric streams are plotted. Every stream is logged at
-the entity named like it (`arm_joint_state`, `observation/cam_high`):
+A *stream* is an input, or one element of a `sync` tuple (`<input>/<field>`).
+Its metadata says what it is:
 
-| stream | must carry | recorded as |
-| --- | --- | --- |
-| `encoding` `rgb8` / `jpeg` | `uint8[N]` + `width`, `height` | file: `rr.VideoStream` (H.264); live: `rr.EncodedImage` (JPEG); in 3D when calibrated (below) |
-| `encoding` `uint16` | `uint16[w*h]` + `width`, `height` | `rr.DepthImage` (millimetres) |
-| listed in `MODE__JOINT_STATES` | a named vector (`names`) | `rr.Scalars`, and the 3D robot's joints (below) |
-| anything else | a numeric array | `rr.Scalars`: with `names`, one entity per component, `<stream>/<name>`, its line labelled with the stream; without, one entity |
+| stream | recorded as |
+| --- | --- |
+| `encoding` `rgb8` / `jpeg` | file: H.264 video; live: JPEG; in 3D when calibrated |
+| `encoding` `uint16` | depth image (millimetres) |
+| listed in `MODE__JOINT_STATES` | plots, and the 3D robot's joints |
+| `frame` (a pose, with `reference`) | axes in the 3D view |
+| any other numeric array | plots, one line per `names` entry |
 
-Every message is logged at its time by `MODE__INPUT_TIME`, on a timeline of
-that name: dora's send `timestamp` by default, since every message has one, or
-`capture_time` when the producers stamp it (then every message needs it).
+Messages are logged at `MODE__INPUT_TIME` (dora's `timestamp`, or
+`capture_time`), and those with `step` also on the `step` timeline, so a
+recording has one row per observation with what was sent for it. A stream
+missing a required key stops the node.
 
-A tuple is one aligned sample. Each element is logged at its own time. A message
-with `step` (a tuple's index, set by `sync`, or a target or command answering
-that tuple, which copies it) is also logged at that index on the `step`
-timeline, so a recording is one row per observation, with what was sent for it.
+**3D robot** (`MODE__ROBOT_URDF`, via `rerun.urdf.UrdfTree`). Joint states move
+it by URDF joint name; mimic joints follow their driver. A session writes three
+files:
 
-A stream missing a key its role
-requires, or a non-numeric stream listed nowhere, stops the node with an error
-naming it; a stream listed under two roles is a config error.
+| file | what |
+| --- | --- |
+| `<recording>.rrd` | the raw streams |
+| `<recording>.fk.rrd` | the forward-kinematics transforms, a layer on the same recording |
+| `<urdf name>.model.rrd` | the static model, written once and shared by every recording |
 
-**3D robot** (`MODE__ROBOT_URDF`): the robot's URDF, through rerun's own
-`rerun.urdf.UrdfTree`, following the `rerun-data-model` and `rerun-urdf` skills
-(`.claude/skills/`). A session with a robot writes three files, one logical recording
-plus a shared asset:
+**Calibrated cameras** (`MODE__CALIBRATION`): an image whose `camera` is in the
+calibration file is drawn in its frustum in the 3D view, moving with the arm
+when mounted on it.
 
-| file | what | why separate |
-| --- | --- | --- |
-| `<recording>.rrd` | base: the raw streams (cameras, joint states and targets, ...) | the faithful record, nothing computed |
-| `<recording>.fk.rrd` | layer: `Transform3D` rows from forward kinematics, on `/robot/transforms`, same recording id | derived data; recomputable from base + URDF |
-| `<urdf name>.model.rrd` | asset: the static model (visual meshes, joint transforms at rest on `/robot/tf_static`), recording id `<urdf name>_model` | identical for every recording: written once, registered on a catalog dataset as an asset (`dataset.register_asset`) so the viewer loads it with every segment |
-
-The live viewer gets all three. Every message on a `MODE__JOINT_STATES` input is turned into
-transforms, on the same timelines as its scalars, for the joints its `names` metadata lists, which must be the URDF's
-joint names (a producer maps its own onto them; the sim's MJCF actuators already
-use them). A joint the URDF does not have is
-skipped with one warning. Mimic joints, which a gripper reports only through its
-driver, get `driver * multiplier + offset` as the URDF declares; the
-transforms' parent and child frames are the URDF link names, the same the model
-uses, so the chain connects.
-
-**Calibrated cameras** (`MODE__CALIBRATION`): the cell's calibration file
-gives every camera's `frame` (the URDF frame it is mounted on), `extrinsics`,
-`intrinsics` and image size. An image whose `camera` metadata names one of them
-is placed in the robot's frames on its first message, the way the
-`rerun-data-model` skill models a camera. Depth images stay 2D. It needs `MODE__ROBOT_URDF`, since `frame` is one of its links.
-`<stream>/calibration` gets a static `Transform3D` from `frame` to
-`<stream>_optical_frame` (the extrinsics) and a `Pinhole` from there into
-`<stream>_image_plane` (the intrinsics), and the stream's images sit in the
-image plane: the viewer draws them inside the frustum, and a camera mounted on
-the arm (`tool0`) moves with it. An image of another size than its calibration
-is for stops the node. An image without a calibrated `camera` stays 2D.
-
-**Layout**: the camera grid and the 3D view (the robot and every camera) on
-top, and below either the plots of `MODE__PLOTS` (plot name -> its entities,
-e.g. a joint's measured and commanded lines together) or one plot of every
-numeric stream. Sent at start and again whenever a new camera appears.
-
-To use your own layout, set `MODE__BLUEPRINT` to a Python file that defines
-`blueprint`:
+**Layout**: cameras and the 3D view on top, plots below (`MODE__PLOTS`, or one
+plot of everything). `MODE__BLUEPRINT` can point at a Python file defining
+`blueprint` to replace it:
 
 ```python
 import rerun.blueprint as rrb
 
 blueprint = rrb.Blueprint(rrb.Spatial2DView(origin="/observation/cam_wrist_image"))
 ```
-
-It is sent to every viewer and into the file, instead of the generated layout.
-(A saved `.rbl` cannot be applied to a live viewer in rerun 0.39, so the
-blueprint is code.)
 
 Encoders are flushed and the file closed on stop.
 
@@ -145,7 +109,7 @@ Encoders are flushed and the file closed on stop.
 | id              | source                  | meaning |
 | --------------- | ----------------------- | ------- |
 | `program_state` | `manager/program_state` | the node stops on `disconnect` |
-| `<any id>`      | any stream              | recorded; give it a deep queue (`queue_size: 1000`), a recorder must not drop messages, not even while it starts |
+| `<any id>`      | any stream              | recorded; give it a deep queue (`queue_size: 1000`) |
 
 Output `node_state`: `ready` once the sinks are up.
 
@@ -163,12 +127,12 @@ Output `node_state`: `ready` once the sinks are up.
 | `MODE__H264_PRESET` | `veryfast` | libx264 preset: `ultrafast` … `medium`, CPU vs file size |
 | `MODE__KEYFRAME_INTERVAL` | `60` | frames between H.264 keyframes in the file (2 s at 30 fps) |
 | `MODE__LIVE_JPEG_QUALITY` | `80` | JPEG quality for the live stream when a camera sends rgb8 |
-| `MODE__INPUT_TIME` | `timestamp` | metadata key of the time messages are logged at: a datetime (dora's `timestamp`) or seconds since the epoch (`capture_time`, or your own) |
+| `MODE__INPUT_TIME` | `timestamp` | metadata key of the time messages are logged at (`timestamp` or `capture_time`) |
 | `MODE__JOINT_STATES` | `[]` | JSON list of the joint-state streams, which also move the 3D robot |
-| `MODE__PLOTS` | `{}` | JSON object, plot name -> the entities it shows: a whole stream, or one component `<stream>/<name>`, e.g. `'{"elbow": ["arm_joint_state/elbow_joint", "joint_target/elbow_joint"]}'` (measured next to commanded); empty: one plot of all |
+| `MODE__PLOTS` | `{}` | JSON object, plot name -> its entities, e.g. `'{"elbow": ["arm_joint_state/elbow_joint", "joint_target/elbow_joint"]}'`; empty: one plot of all |
 | `MODE__ROBOT_URDF` | unset | robot URDF shown in 3D and moved by the `MODE__JOINT_STATES` streams, relative to the dataflow directory |
 | `MODE__CALIBRATION` | unset | camera calibration file (YAML), relative to the dataflow directory, e.g. `assets/cells/ur10e_tabletop/calibration.yaml` |
-| `MODE__SCENE` | unset | a scene file (format: `assets/README.md`) giving `MODE__ROBOT_URDF` and `MODE__CALIBRATION` instead (its `urdf`, `calibration`); each comes one way, not both |
+| `MODE__SCENE` | unset | a scene file giving `MODE__ROBOT_URDF` and `MODE__CALIBRATION` |
 | `MODE__BLUEPRINT` | unset | Python file defining `blueprint`, sent instead of the generated layout |
 
 ## `visualize` mode

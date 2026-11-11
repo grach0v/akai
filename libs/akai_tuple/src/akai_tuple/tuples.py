@@ -47,6 +47,18 @@ def build(names: list[str], events: list[dict]) -> tuple[pa.StructArray, dict]:
     return pa.StructArray.from_arrays(arrays, names=fields), metadata
 
 
+def select(value: pa.StructArray, metadata: dict, names: list[str]) -> tuple[pa.StructArray, dict]:
+    """The tuple with only the elements `names`, in that order, and without the others' metadata.
+    Zero-copy."""
+    have = [field.name for field in value.type]
+    missing = [n for n in names if n not in have]
+    if missing:
+        raise ValueError(f"the tuple has no element {missing}; it has {have}")
+    dropped = [f"{n}." for n in have if n not in names]
+    kept = {k: v for k, v in metadata.items() if not k.startswith(tuple(dropped))}
+    return pa.StructArray.from_arrays([value.field(n) for n in names], names=names), kept
+
+
 def elements(value: pa.StructArray, metadata: dict) -> list[tuple[str, pa.Array, dict]]:
     """The tuple's elements, in order: (name, its array, its metadata without the `<name>.` prefix)."""
     out = []

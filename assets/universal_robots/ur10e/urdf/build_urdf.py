@@ -19,7 +19,8 @@ descriptions, fetched and cached by `robot_descriptions`:
   rest of the linkage through `<mimic>` joints.
 
 It joins them with one fixed joint from the arm's `tool0` to the gripper's
-`robotiq_85_base_link`, and makes the result self-contained: every mesh is copied next to
+`robotiq_85_base_link`, adds a `tcp` link (the tool centre point, which a pose target drives),
+and makes the result self-contained: every mesh is copied next to
 it under `meshes/` with a relative path, and UR's Collada visuals are converted to GLB
 (rerun's Asset3D reads glTF/GLB, OBJ and STL, not Collada). Re-run it only when the
 robot changes:
@@ -57,6 +58,9 @@ class UrdfBuildConfig(BaseSettings):
     # Rotation about the tool axis (rad): the fingers open along the flange's x axis, the
     # left finger on the same side as in the MuJoCo model.
     gripper_mount_yaw: float = 3.141592653589793
+    # The tool centre point beyond `tool0` along the tool axis (m), oriented like `tool0`: the
+    # middle of the finger pads, closed (measured on the meshes; 0.144 open).
+    tcp_z: float = 0.156
 
 
 def render_ur10e() -> ET.Element:
@@ -123,6 +127,11 @@ def main() -> None:
     ET.SubElement(mount, "parent", link="tool0")
     ET.SubElement(mount, "child", link="robotiq_85_base_link")
     ET.SubElement(mount, "origin", xyz=f"0 0 {cfg.gripper_mount_z}", rpy=f"0 0 {cfg.gripper_mount_yaw}")
+    ET.SubElement(robot, "link", name="tcp")
+    tcp = ET.SubElement(robot, "joint", name="tool0-tcp", type="fixed")
+    ET.SubElement(tcp, "parent", link="tool0")
+    ET.SubElement(tcp, "child", link="tcp")
+    ET.SubElement(tcp, "origin", xyz=f"0 0 {cfg.tcp_z}", rpy="0 0 0")
 
     ET.indent(robot)
     (out / "ur10e_2f85.urdf").write_text(ET.tostring(robot, encoding="unicode") + "\n")
