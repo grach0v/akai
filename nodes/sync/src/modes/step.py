@@ -7,9 +7,9 @@ input that is a tuple itself (an observation) is joined in flat: its elements be
 tuple's (`akai_tuple.build`), so a consumer gets one level, e.g. an observation's joint states
 and images next to the target answering it. `elements`, when set, picks which of them go on.
 
-A step some input never sent is dropped once a newer one completes, handled as `on_drop` says;
-a message for a step older than the last tuple's is dropped the same way. At most `max_pending`
-incomplete steps wait.
+A step some input never sent is dropped with a warning once a newer one completes; so is a
+message for a step older than the last tuple's. At most 30 incomplete steps (a second of
+observations) wait.
 
 Inputs:  program_state, plus every id in `inputs`.
 Outputs: <output> (the tuple), node_state.
@@ -20,44 +20,22 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-import pyarrow as pa
+from akai_node import Mode
 from akai_tuple import build, select
-from dora import Node
 
-from bundler import report
 from config import SyncConfig
 
 logger = logging.getLogger("sync")
 
 
-class StepMode:
+class StepMode(Mode):
     def __init__(self, cfg: SyncConfig):
+        super().__init__()
         self.opts = cfg.mode
-        self.node: Node | None = None
-        self.state: str | None = None
         self._pending: dict[int, dict[str, dict]] = {}  # step -> input id -> its event
         self._last: int | None = None  # the last tuple's step
-        self._handlers: dict[str, Callable[[dict], bool]] = {"program_state": self._on_program_state}
         for input_id in self.opts.inputs:
-            self._handlers[input_id] = self._input_handler(input_id)
-
-    # -- node protocol -------------------------------------------------------
-
-    def start(self, node: Node) -> None:
-        self.node = node
-        self._set_state("ready")
-
-    def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node."""
-        return self._handlers[event["id"]](event)  # KeyError on an unwired input id is a wiring bug
-
-    def close(self) -> None:
-        """Nothing to release."""
-
-    # -- inputs --------------------------------------------------------------
-
-    def _on_program_state(self, event: dict) -> bool:
-        return event["value"][0].as_py() == "disconnect"
+            self.handlers[input_id] = self._input_handler(input_id)
 
     def _input_handler(self, input_id: str) -> Callable[[dict], bool]:
         def on_input(event: dict) -> bool:
@@ -65,18 +43,13 @@ class StepMode:
                 raise ValueError(f"{input_id}: a message without `step`; step mode joins by it")
             step = event["metadata"]["step"]
             if self._last is not None and step <= self._last:
-                report(
-                    logger,
-                    self.opts.on_drop,
-                    f"{input_id}: step {step} came after step {self._last}'s tuple; dropped",
-                )
+                logger.warning("%s: step %d came after step %d's tuple; dropped", input_id, step, self._last)
                 return False
             self._pending.setdefault(step, {})[input_id] = event
             if len(self._pending[step]) == len(self.opts.inputs):
                 self._emit(step)
-            elif len(self._pending) > self.opts.max_pending:
-                oldest = min(self._pending)
-                self._drop(oldest)
+            elif len(self._pending) > 30:
+                self._drop(min(self._pending))
             return False
 
         return on_input
@@ -99,10 +72,4 @@ class StepMode:
     def _drop(self, step: int) -> None:
         pending = self._pending.pop(step)
         missing = [i for i in self.opts.inputs if i not in pending]
-        report(logger, self.opts.on_drop, f"step {step} dropped: no message from {missing}")
-
-    def _set_state(self, state: str) -> None:
-        """Edge-triggered node_state: emitted only when the state changes."""
-        if state != self.state:
-            self.state = state
-            self.node.send_output("node_state", pa.array([state]))
+        logger.warning("step %d dropped: no message from %s", step, missing)

@@ -13,6 +13,7 @@ description = "Dora node publishing frames from an OpenCV capture (webcam or fil
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "akai_node",
     "dora-rs==1.1.0",
     "opencv-python>=4.10",
     "pyarrow",
@@ -21,6 +22,9 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+akai_node = { path = "../../libs/akai_node", editable = true }   # the node runtime
 
 [tool.ruff]
 line-length = 110

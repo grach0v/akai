@@ -16,7 +16,7 @@ dataflow, so no tick is queued while it opens.
 ```
 pyproject.toml     # uv project: dora-rs + opencv-python (+ pyarrow, pydantic-settings)
 src/config.py      # CameraConfig: node fields + `mode`, one config class per mode picked by MODE__NAME
-src/main.py        # dora skeleton, identical in every node: config -> mode -> Node -> loop
+src/main.py        # runs the modes (akai_node)
 src/modes/camera.py  # `camera` mode: CameraReader thread keeps the latest frame, CameraMode publishes on tick
 ```
 
@@ -38,7 +38,7 @@ Any other input id raises: an unexpected input on a producer is a wiring bug.
 | id                         | payload              | metadata |
 | -------------------------- | -------------------- | -------- |
 | `<camera_name>_image`      | `uint8[N]`           | `camera`, `encoding` (`rgb8` \| `jpeg`), `width`, `height`, `capture_time` |
-| `<camera_name>_node_state` | `utf8[1]` state token | none |
+| `node_state`               | `utf8[1]` state token | none |
 
 - `rgb8`: the raveled H×W×3 RGB frame, `N = width * height * 3`.
 - `jpeg`: JPEG bytes; `width`/`height` still describe the decoded frame.
@@ -63,7 +63,7 @@ flag (`--mode.fps 15`), which overrides the env, for dora modules whose `params:
 
 | var            | default  | meaning |
 | -------------- | -------- | ------- |
-| `CAMERA_NAME`  | required | stream name; prefixes both outputs |
+| `CAMERA_NAME`  | required | the camera's name: its image output is `<CAMERA_NAME>_image`, and the `camera` in its metadata |
 | `MODE__NAME` | `camera` | which mode runs |
 
 `camera` mode config:
@@ -95,7 +95,7 @@ nodes:
     inputs:
       tick: { source: dora/timer/millis/10, queue_size: 1, queue_policy: drop_oldest }
       program_state: manager/program_state
-    outputs: [cam_high_image, cam_high_node_state]
+    outputs: [cam_high_image, node_state]
     env:
       CAMERA_NAME: "cam_high"
       MODE__NAME: "camera"

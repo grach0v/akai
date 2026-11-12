@@ -41,7 +41,3 @@ class CameraConfig(BaseSettings):
     camera_name: str
     # Which mode runs, and its settings.
     mode: ModeConfig = Field(default_factory=CameraModeConfig, discriminator="name")
-
-
-def load_config() -> CameraConfig:
-    return CameraConfig(_cli_parse_args=True)

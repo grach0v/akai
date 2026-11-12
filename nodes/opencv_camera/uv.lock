@@ -7,6 +7,23 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "akai-node"
+version = "0.1.0"
+source = { editable = "../../libs/akai_node" }
+dependencies = [
+    { name = "dora-rs" },
+    { name = "pyarrow" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dora-rs" },
+    { name = "pyarrow" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -202,6 +219,7 @@ name = "opencv-camera"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "akai-node" },
     { name = "dora-rs" },
     { name = "opencv-python" },
     { name = "pyarrow" },
@@ -210,6 +228,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "akai-node", editable = "../../libs/akai_node" },
     { name = "dora-rs", specifier = "==1.1.0" },
     { name = "opencv-python", specifier = ">=4.10" },
     { name = "pyarrow" },

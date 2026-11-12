@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-import socket
 import threading
 import time
 
 import uvicorn
+from akai_node import port_open
 from fastapi import FastAPI
 
 logger = logging.getLogger("web_controller")
@@ -17,10 +17,9 @@ class WebServer:
     """Serves `app` on a daemon thread. Its asyncio loop is its own; the dora loop never
     runs on it, so a mode shares state with its routes through a lock."""
 
-    def __init__(self, app: FastAPI, host: str, port: int, timeout: float):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:  # uvicorn would only log a failed bind
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                raise RuntimeError(f"port {port} is taken. Close what holds it or set PORT to a free port.")
+    def __init__(self, app: FastAPI, host: str, port: int, timeout: float = 5.0):
+        if port_open(host, port):  # uvicorn would only log a failed bind
+            raise RuntimeError(f"port {port} is taken. Close what holds it or set PORT to a free port.")
         self.url = f"http://{host}:{port}"
         self._server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
         self._thread = threading.Thread(target=self._server.run, name="web-server", daemon=True)

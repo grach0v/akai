@@ -31,7 +31,7 @@ from the cell's scene file instead (its `SCENE` / `MODE__SCENE`), never both way
 | file | read by |
 | --- | --- |
 | the cell's MJCF | the `mujoco` node (`MODEL`, with its `PARTS`) |
-| the cell's URDF | the `rerun` node (`MODE__ROBOT_URDF`), the `web_controller` node (`MODE__URDF`), the `pink` node (`URDF`) |
+| the cell's URDF | the `rerun` node (`MODE__URDF`), the `web_controller` node (`URDF`), the `pink` node (`URDF`) |
 | calibration | the `rerun` node (`MODE__CALIBRATION`), the cell builder |
 | scene file | any of them, in place of the above; the cell builder |
 

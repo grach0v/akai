@@ -25,10 +25,8 @@ class CameraConfig(BaseModel):
     # the env: MODE__CAMERAS='["cam_overhead"]'. Empty: no renderer at all.
     cameras: list[str] = []
     # Also render depth (`<camera>_depth`) for the RGB-D cameras (`depth: true` in the calibration).
+    # Each camera renders at its MJCF `resolution`, which the cell builder takes from the calibration.
     depth: bool = False
-    # Rendered image size; at most the model's offscreen buffer (<visual><global offwidth/offheight>).
-    width: int = Field(640, gt=0)
-    height: int = Field(480, gt=0)
     # MuJoCo render flags, by `mjtRndFlag` name without its `mjRND_` prefix (SHADOW, REFLECTION,
     # SKYBOX, FOG, HAZE, ...); unset ones keep MuJoCo's defaults. A JSON object in the env:
     # MODE__RENDER_FLAGS='{"SHADOW": false}'.
@@ -42,11 +40,6 @@ class SimModeConfig(CameraConfig):
     """`sim` mode: run the scene in real time, drive its parts, render its cameras."""
 
     name: Literal["sim"] = "sim"
-    # Simulated seconds per wall-clock second.
-    realtime_factor: float = Field(1.0, gt=0)
-    # When the physics falls further behind the wall clock than this (seconds of sim time),
-    # it drops the backlog instead of racing to catch up.
-    max_lag: float = Field(0.1, gt=0)
 
 
 class StepModeConfig(CameraConfig):
@@ -86,7 +79,3 @@ class MujocoConfig(BaseSettings):
         if self.model is None or not self.parts:
             raise ValueError("the sim needs MODEL and PARTS, or a SCENE file with a `mujoco` section")
         return self
-
-
-def load_config() -> MujocoConfig:
-    return MujocoConfig(_cli_parse_args=True)

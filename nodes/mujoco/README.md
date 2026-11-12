@@ -7,7 +7,7 @@ and the MJCF's cameras go out as `<camera>_image` (and `<camera>_depth`).
 
 ```
 src/config.py      # MujocoConfig: the scene (MODEL + PARTS, or SCENE) + `mode`
-src/main.py        # dora skeleton, identical in every node
+src/main.py        # runs the modes (akai_node)
 src/modes/sim.py   # `sim`: real time
 src/modes/step.py  # `step`: one fixed period per tick
 ```
@@ -19,7 +19,7 @@ where the sim starts.
 ## `sim` mode
 
 Real time, as a real robot. Physics runs on its own thread, paced to the wall
-clock. A `joint_target` is written to the actuators as it arrives. On each tick
+clock (more than 0.1 s behind, it drops the backlog rather than race). A `joint_target` is written to the actuators as it arrives. On each tick
 the node copies the simulation, waits for the cameras to render it (~7 ms for
 two 640×480 JPEG cameras, ~15 ms with depth), and sends joint states and images
 of that instant, stamped with `capture_time`.
@@ -61,14 +61,11 @@ policy cost what it would on hardware.
 | `SCENE` | unset | a scene file giving `MODEL`, `PARTS` and `CALIBRATION` |
 | `CALIBRATION` | unset | camera calibration file (or the scene's): its RGB-D cameras also render depth |
 | `MODE__NAME` | `sim` | `sim` (real time) or `step` (one period per tick) |
-| `MODE__CAMERAS` | `[]` | JSON list of MJCF cameras to publish; empty: no renderer |
+| `MODE__CAMERAS` | `[]` | JSON list of MJCF cameras to publish, each at its MJCF `resolution` (the calibration's size); empty: no renderer |
 | `MODE__DEPTH` | `false` | also publish depth for the RGB-D cameras |
-| `MODE__WIDTH` / `MODE__HEIGHT` | `640` / `480` | image size, at most the model's offscreen buffer |
 | `MODE__RENDER_FLAGS` | `{}` | JSON object of MuJoCo render flags without `mjRND_`, e.g. `{"SHADOW": false}` |
 | `MODE__ENCODING` | `rgb8` | `rgb8` or `jpeg` |
 | `MODE__JPEG_QUALITY` | `90` | 1–100, for `jpeg` |
-| `MODE__REALTIME_FACTOR` | `1.0` | `sim`: simulated seconds per wall-clock second |
-| `MODE__MAX_LAG` | `0.1` | `sim`: seconds behind the wall clock before the backlog is dropped |
 | `MODE__PERIOD` | `0.033` | `step`: simulated seconds per tick, the tick's interval |
 
 Headless Linux needs an offscreen GL: set `MUJOCO_GL: "egl"` (or `osmesa`) in

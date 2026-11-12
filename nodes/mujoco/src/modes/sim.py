@@ -17,18 +17,17 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import mujoco
 import numpy as np
 import pyarrow as pa
+from akai_node import Mode, Worker
 from akai_scene import load_calibration
-from dora import Node
 from PIL import Image
 
-from config import CameraConfig, MujocoConfig, SimModeConfig
+from config import CameraConfig, MujocoConfig
 
 logger = logging.getLogger("mujoco")
 
@@ -51,51 +50,21 @@ def resolve(model_path: Path, parts: dict[str, list[str]]) -> tuple[mujoco.MjMod
     return model, resolved
 
 
-class Worker:
-    """A background thread running `_run` until `stop`. If `_run` ends on its own (an exception,
-    printed by threading's excepthook), `ended` turns True."""
-
-    def __init__(self, name: str):
-        self._stop = threading.Event()
-        self._ended = threading.Event()
-        self._thread = threading.Thread(target=self._main, name=name, daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=2.0)
-
-    @property
-    def ended(self) -> bool:
-        return self._ended.is_set() and not self._stop.is_set()
-
-    def _main(self) -> None:
-        try:
-            self._run()
-        finally:
-            self._ended.set()
-
-    def _run(self) -> None:
-        raise NotImplementedError
-
-
 class Physics(Worker):
     """Steps the model in real time, under the lock it shares with the dora thread."""
 
-    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, lock: threading.Lock, opts: SimModeConfig):
+    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, lock: threading.Lock):
         super().__init__("mujoco-physics")
-        self._model, self._data, self._lock, self._opts = model, data, lock, opts
+        self._model, self._data, self._lock = model, data, lock
 
     def _run(self) -> None:
         wall0, sim0 = time.monotonic(), self._data.time
         while not self._stop.is_set():
-            ahead = (self._data.time - sim0) - (time.monotonic() - wall0) * self._opts.realtime_factor
+            ahead = (self._data.time - sim0) - (time.monotonic() - wall0)
             if ahead > 0:
-                time.sleep(ahead / self._opts.realtime_factor)
+                time.sleep(ahead)
                 continue
-            if -ahead > self._opts.max_lag:
+            if -ahead > 0.1:  # racing to catch up would run the robot fast: drop the backlog
                 logger.warning("physics %.0f ms behind the wall clock; dropping the backlog", -ahead * 1e3)
                 wall0, sim0 = time.monotonic(), self._data.time
             with self._lock:
@@ -115,13 +84,21 @@ def depth_mm(depth: np.ndarray) -> np.ndarray:
     return (depth * 1000.0).round().clip(0, 65535).astype(np.uint16).ravel()
 
 
+def resolution(model: mujoco.MjModel, camera: str) -> tuple[int, int]:
+    """(width, height) of an MJCF camera: its `resolution`. An unknown camera raises."""
+    width, height = (int(v) for v in model.cam_resolution[model.camera(camera).id])
+    if (width, height) == (1, 1):  # MuJoCo's default: none given
+        raise ValueError(f"camera {camera}: no `resolution` in the MJCF (the cell builder sets it)")
+    return width, height
+
+
 class Cameras(Worker):
-    """Owns the offscreen renderer: renders every camera from the snapshot, on request."""
+    """Owns the offscreen renderers, one per image size: renders every camera from the snapshot,
+    on request, at its MJCF resolution."""
 
     def __init__(self, model: mujoco.MjModel, snapshot: mujoco.MjData, opts: CameraConfig, depth: list[str]):
         super().__init__("mujoco-render")
-        for cam in opts.cameras:
-            model.camera(cam)  # an unknown name raises
+        self.size = {cam: resolution(model, cam) for cam in opts.cameras}
         self.depth = depth  # the cameras that also render depth
         self._flags = {_render_flag(name): on for name, on in opts.render_flags.items()}
         self._model, self._snapshot, self._opts = model, snapshot, opts
@@ -147,10 +124,13 @@ class Cameras(Worker):
         return rgb.ravel()
 
     def _run(self) -> None:
-        # The GL context belongs to the thread that creates it, so the renderer is made here.
-        with mujoco.Renderer(self._model, height=self._opts.height, width=self._opts.width) as renderer:
+        # The GL context belongs to the thread that creates it, so the renderers are made here.
+        renderers = {}
+        for width, height in set(self.size.values()):
+            renderers[width, height] = renderer = mujoco.Renderer(self._model, height=height, width=width)
             for flag, on in self._flags.items():
                 renderer.scene.flags[flag] = on
+        try:
             while not self._stop.is_set():
                 try:
                     capture = self._todo.get(timeout=0.1)
@@ -158,6 +138,7 @@ class Cameras(Worker):
                     continue
                 frames = {}
                 for cam in self._opts.cameras:
+                    renderer = renderers[self.size[cam]]
                     renderer.update_scene(self._snapshot, camera=cam)
                     image, depth = self._encode(renderer.render()), None
                     if cam in self.depth:
@@ -166,14 +147,16 @@ class Cameras(Worker):
                         renderer.disable_depth_rendering()
                     frames[cam] = (image, depth)
                 self._done.put((capture, frames))
+        finally:
+            for renderer in renderers.values():
+                renderer.close()
 
 
-class SimMode:
+class SimMode(Mode):
     def __init__(self, cfg: MujocoConfig):
         """Load the scene and put it in its home pose before joining the dataflow."""
+        super().__init__()
         self.opts = opts = cfg.mode
-        self.node: Node | None = None
-        self.state: str | None = None
         self.model, self.parts = resolve(cfg.model, cfg.parts)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.model.key("home").id)
@@ -191,16 +174,8 @@ class SimMode:
             raise ValueError("MODE__DEPTH: none of MODE__CAMERAS is RGB-D (`depth: true`) in the calibration")
         self.cameras = Cameras(self.model, self.snapshot, opts, depth) if opts.cameras else None
         self._workers: list[Worker] = [self.physics] + ([self.cameras] if self.cameras else [])
-        self._image_md = {
-            "encoding": opts.encoding,
-            "width": opts.width,
-            "height": opts.height,
-        }
-        self._handlers: dict[str, Callable[[dict], bool]] = {
-            "tick": self._on_tick,
-            "program_state": self._on_program_state,
-            "joint_target": self._on_joint_target,
-        }
+        self.handlers["tick"] = self._on_tick
+        self.handlers["joint_target"] = self._on_joint_target
         # URDF joint name -> the actuator driving it.
         self._actuator_of: dict[str, int] = {
             name: int(actuator) for part in self.parts for name, actuator in zip(part.names, part.actuators)
@@ -216,19 +191,14 @@ class SimMode:
 
     def _physics(self) -> Worker:
         """The thread that moves the simulation: here in real time."""
-        return Physics(self.model, self.data, self._lock, self.opts)
+        return Physics(self.model, self.data, self._lock)
 
     # -- node protocol -------------------------------------------------------
 
-    def start(self, node: Node) -> None:
-        self.node = node
+    def start(self, node) -> None:
         for worker in self._workers:
             worker.start()
-        self._set_state("ready")
-
-    def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node."""
-        return self._handlers[event["id"]](event)  # KeyError on an unwired input id is a wiring bug
+        super().start(node)
 
     def close(self) -> None:
         for worker in self._workers:
@@ -238,7 +208,7 @@ class SimMode:
 
     def _on_tick(self, event: dict) -> bool:
         if any(worker.ended for worker in self._workers):
-            self._set_state("finished")  # a background thread died; its traceback is in the log
+            self.set_state("finished")  # a background thread died; its traceback is in the log
             return False
         capture = self._capture()
         if self.cameras is None:
@@ -269,22 +239,13 @@ class SimMode:
                 metadata={"names": part.names, "capture_time": capture_time},
             )
         for cam, (image, depth) in frames.items():
+            width, height = self.cameras.size[cam]
+            md = {"camera": cam, "width": width, "height": height, "capture_time": capture_time}
             self.node.send_output(
-                f"{cam}_image",
-                pa.array(image),
-                metadata={**self._image_md, "camera": cam, "capture_time": capture_time},
+                f"{cam}_image", pa.array(image), metadata={**md, "encoding": self.opts.encoding}
             )
             if depth is not None:
-                self.node.send_output(
-                    f"{cam}_depth",
-                    pa.array(depth),
-                    metadata={
-                        **self._image_md,
-                        "encoding": "uint16",
-                        "camera": cam,
-                        "capture_time": capture_time,
-                    },
-                )
+                self.node.send_output(f"{cam}_depth", pa.array(depth), metadata={**md, "encoding": "uint16"})
 
     def _on_joint_target(self, event: dict) -> bool:
         """A named vector of joint targets, by URDF joint name and in URDF units: each value goes to
@@ -300,12 +261,3 @@ class SimMode:
         with self._lock:
             self.data.ctrl[actuators] = values
         return False
-
-    def _on_program_state(self, event: dict) -> bool:
-        return event["value"][0].as_py() == "disconnect"
-
-    def _set_state(self, state: str) -> None:
-        """Edge-triggered node_state: emitted only when the state changes."""
-        if state != self.state:
-            self.state = state
-            self.node.send_output("node_state", pa.array([state]))

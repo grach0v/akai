@@ -13,7 +13,7 @@ No heartbeat, no liveness polling: dora already detects node death.
 ```
 pyproject.toml     # uv project: dora-rs, python-statemachine, pydantic-settings
 src/config.py      # ManagerConfig: node fields + `mode`, one config class per mode picked by MODE__NAME
-src/main.py        # dora skeleton, identical in every node: config -> mode -> Node -> loop
+src/main.py        # runs the modes (akai_node)
 src/modes/simple.py  # `simple` mode: boot -> running -> disconnect
 ```
 
@@ -35,7 +35,7 @@ States: `boot` (initial), `running`, `disconnect` (final).
 
 | id          | source                        | meaning |
 | ----------- | ----------------------------- | ------- |
-| `<any id>`  | `<node>/<name>_node_state`    | one input per watched node; the payload is a single utf8 token |
+| `<any id>`  | `<node>/node_state`           | one input per watched node; the payload is a single utf8 token |
 
 Input ids listed in `PRODUCERS` must report `ready` before the program leaves `boot`.
 
@@ -71,7 +71,7 @@ flag (`--mode.producers '["a"]'`), which overrides the env.
     path: ../../../nodes/manager/.venv/bin/python
     args: ../../../nodes/manager/src/main.py
     inputs:
-      cam_high: cam_high/cam_high_node_state
+      cam_high: cam_high/node_state
     outputs: [program_state]
     env:
       MODE__NAME: "simple"

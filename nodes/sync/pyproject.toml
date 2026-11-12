@@ -1,4 +1,4 @@
-# sync node — bundles several streams into one message the moment each has a fresh sample.
+# sync node — joins several streams into one message: aligned in time, or by observation step.
 #
 # Not a package: `src/main.py` runs as a plain script under this venv:
 #   build: uv sync --project ../../nodes/sync
@@ -7,10 +7,11 @@
 [project]
 name = "sync"
 version = "0.1.0"
-description = "Dora node joining several named vectors into one bundle once every input has a fresh sample."
+description = "Dora node joining several streams into one tuple: aligned to a reference time, or by observation step."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "akai_node",
     "akai_tuple",
     "dora-rs==1.1.0",
     "pyarrow",
@@ -18,6 +19,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+akai_node = { path = "../../libs/akai_node", editable = true }   # the node runtime
 akai_tuple = { path = "../../libs/akai_tuple", editable = true }   # the tuple format
 
 [dependency-groups]
@@ -25,7 +27,6 @@ akai_tuple = { path = "../../libs/akai_tuple", editable = true }   # the tuple f
 #   uv sync --project nodes/sync --group examples
 examples = [
     "pyarrow-assert==0.5.0",
-    "pyarrow-sender==0.5.0",
 ]
 
 [tool.uv]

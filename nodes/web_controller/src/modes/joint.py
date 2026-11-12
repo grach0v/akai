@@ -11,8 +11,8 @@ Three parties share one `Board` under its lock:
 * the dora loop (main thread) writes the measured joint values and the program
   state into it, and on every observation publishes the targets of all parts, but only
   while the program is `running`;
-* the page's WebSocket (the web server's thread) is pushed a snapshot at
-  `push_hz` and writes targets from the sliders and -/+ buttons into it;
+* the page's WebSocket (the web server's thread) is pushed a snapshot 15 times a
+  second and writes targets from the sliders and -/+ buttons into it;
 * nothing else: targets are a latest-value slot per part, not a queue.
 
 The loop is closed on the measured state:
@@ -37,17 +37,16 @@ import logging
 import threading
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
+from akai_node import Mode
 from akai_tuple import elements
-from dora import Node
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from config import JointModeConfig, WebControllerConfig
+from config import WebControllerConfig
 from server import WebServer
 
 logger = logging.getLogger("web_controller")
@@ -76,9 +75,9 @@ class Board:
     """The state the dora loop and the page share. Every method takes the lock. Joints in
     `exclude` (driven another way, by a pose) get no slider and no target."""
 
-    def __init__(self, opts: JointModeConfig, exclude: frozenset[str] = frozenset()):
-        self._opts = opts
-        self._limits = urdf_limits(opts.urdf)
+    def __init__(self, urdf: Path, step: float, exclude: frozenset[str] = frozenset()):
+        self._urdf, self._step = urdf, step
+        self._limits = urdf_limits(urdf)
         self._exclude = exclude
         self._lock = threading.Lock()
         self._parts: dict[str, PartState] = {}
@@ -99,7 +98,7 @@ class Board:
             if state is None:
                 unbounded = [n for n in names if n not in self._limits]
                 if unbounded:
-                    raise ValueError(f"{part}: no joint limits in {self._opts.urdf} for {unbounded}")
+                    raise ValueError(f"{part}: no joint limits in {self._urdf} for {unbounded}")
                 self._parts[part] = PartState(
                     names=list(names),
                     lower=[self._limits[n][0] for n in names],
@@ -138,7 +137,6 @@ class Board:
         with self._lock:
             return {
                 "program_state": self._program_state,
-                "step": self._opts.step,
                 "parts": {
                     part: {
                         "names": s.names,
@@ -166,13 +164,8 @@ class Board:
                 logger.warning("page sent a target for unknown part %r", msg["part"])
             else:
                 state, i = self._parts[msg["part"]], int(msg["index"])
-                value = (
-                    float(msg["value"]) if kind == "set" else state.target[i] + msg["dir"] * self._opts.step
-                )
+                value = float(msg["value"]) if kind == "set" else state.target[i] + msg["dir"] * self._step
                 state.target[i] = min(max(value, state.lower[i]), state.upper[i])
-
-    def page_closed(self) -> None:
-        """The page went away (closed, reloaded, network lost)."""
 
     def _reset(self) -> None:
         """Every target to the measured state. Under the lock."""
@@ -180,7 +173,7 @@ class Board:
             state.target = list(state.measured)
 
 
-def build_app(board: Board, push_hz: float) -> FastAPI:
+def build_app(board: Board) -> FastAPI:
     app = FastAPI(title="web_controller")
 
     page_file = Path(__file__).resolve().parent.parent / "web" / "index.html"
@@ -196,7 +189,7 @@ def build_app(board: Board, push_hz: float) -> FastAPI:
         async def push() -> None:
             while True:
                 await socket.send_json(board.snapshot())
-                await asyncio.sleep(1.0 / push_hz)
+                await asyncio.sleep(1 / 15)  # smooth enough to watch, light on the link
 
         pusher = asyncio.create_task(push())
         try:
@@ -206,38 +199,23 @@ def build_app(board: Board, push_hz: float) -> FastAPI:
             pass
         finally:
             pusher.cancel()
-            board.page_closed()
 
     return app
 
 
-class JointMode:
+class JointMode(Mode):
     def __init__(self, cfg: WebControllerConfig):
         """Start the web server before joining the dataflow, so a taken port fails early."""
+        super().__init__()
         self.opts = cfg.mode
-        self.node: Node | None = None
-        self.state: str | None = None
-        self.board = self._board()
-        self.server = WebServer(
-            build_app(self.board, self.opts.push_hz), cfg.host, cfg.port, cfg.server_timeout
-        )
-        self._handlers: dict[str, Callable[[dict], bool]] = {
-            "observation": self._on_observation,
-            "program_state": self._on_program_state,
-        }
+        self.board = self._board(cfg.urdf)
+        self.server = WebServer(build_app(self.board), cfg.host, cfg.port)
+        self.handlers["observation"] = self._on_observation
 
-    def _board(self) -> Board:
-        return Board(self.opts)
+    def _board(self, urdf: Path) -> Board:
+        return Board(urdf, self.opts.step)
 
     # -- node protocol -------------------------------------------------------
-
-    def start(self, node: Node) -> None:
-        self.node = node
-        self._set_state("ready")
-
-    def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node."""
-        return self._handlers[event["id"]](event)  # KeyError on an unwired input id is a wiring bug
 
     def close(self) -> None:
         self.server.stop()
@@ -251,7 +229,7 @@ class JointMode:
             if "names" in element_md:
                 self.board.measured(name, element_md["names"], array.to_pylist())
         if self.board.disconnect_requested:
-            self._set_state("disconnect")
+            self.set_state("disconnect")
         targets = self.board.targets()
         if targets is not None:
             names, values = targets
@@ -262,13 +240,6 @@ class JointMode:
             )
         return False
 
-    def _on_program_state(self, event: dict) -> bool:
-        value = event["value"][0].as_py()
-        self.board.program_state(value)
-        return value == "disconnect"
-
-    def _set_state(self, state: str) -> None:
-        """Edge-triggered node_state: emitted only when the state changes."""
-        if state != self.state:
-            self.state = state
-            self.node.send_output("node_state", pa.array([state]))
+    def on_program_state(self, event: dict) -> bool:
+        self.board.program_state(event["value"][0].as_py())
+        return super().on_program_state(event)

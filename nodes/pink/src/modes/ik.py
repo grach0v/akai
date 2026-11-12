@@ -4,8 +4,11 @@ Every `step` tuple (the measured joints and the targets answering them, joined b
 answered at once with a command one IK step toward the targets. A target is a joint target
 (`names`) or a pose target (`frame`, `reference`: `[x, y, z, qx, qy, qz, qw]`). Joints no joint
 target names are held loosely, so a pose moves them freely. The step respects the URDF velocity
-limits times `speed_scale`, the joint limits, and a collision barrier; a step that still
-collides, or has no solution, is not taken and the last command is held.
+limits times `speed_scale`, the joint limits, and a collision barrier keeping `min_distance`;
+a step that still collides, or has no solution, is not taken and the last command is held.
+
+The command starts at the measured joints, and again on every program state change; after that
+each step starts from the last command.
 
 Inputs:  step (a tuple), program_state.
 Outputs: joint_target (every actuated joint, with the tuple's `step`), node_state.
@@ -15,14 +18,13 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 
 import numpy as np
 import pink
 import pinocchio as pin
 import pyarrow as pa
+from akai_node import Mode
 from akai_tuple import elements
-from dora import Node
 from pink.barriers import SelfCollisionBarrier
 from pink.exceptions import NoSolutionFound
 from pink.limits import ConfigurationLimit, VelocityLimit
@@ -34,12 +36,12 @@ from robot import Robot
 logger = logging.getLogger("pink")
 
 
-class IkMode:
+class IkMode(Mode):
     def __init__(self, cfg: PinkConfig):
         """Load the robot model and set up the IK problem before joining the dataflow."""
+        super().__init__()
         self.opts = cfg.mode
-        self.node: Node | None = None
-        self.state: str | None = None
+        self.program_state: str | None = None
         self.robot = Robot(cfg.urdf)
         model = self.robot.model
         self._index = {name: i for i, name in enumerate(self.robot.names)}
@@ -50,8 +52,13 @@ class IkMode:
         ]
         self._barriers = [
             SelfCollisionBarrier(
-                n_collision_pairs=min(self.opts.barrier_pairs, len(self.robot.geom.collisionPairs)),
-                gain=self.opts.barrier_gain,
+                # the closest pairs only: far ones do not matter, and each costs time (the final
+                # collision check still covers every pair)
+                n_collision_pairs=min(16, len(self.robot.geom.collisionPairs)),
+                # how fast a gap may close, per second, as a fraction of what is left above
+                # min_distance: below 5, moves near the robot's own links (2 cm apart at home)
+                # crawl; above 10, one step (at most 0.1 s) may close it all
+                gain=5.0,
                 d_min=self.opts.min_distance,
                 # pink's default also pulls every step toward standing still, which outweighs a
                 # pose task; the barrier's constraint is what keeps the robot safe
@@ -64,24 +71,8 @@ class IkMode:
         self._poses: dict[str, FrameTask] = {}  # frame -> its task, at the latest pose target
         self._held: str | None = None  # why the command is held, if it is
         self._last_target: float | None = None  # when the previous target arrived (monotonic)
-        self._handlers: dict[str, Callable[[dict], bool]] = {
-            "step": self._on_step,
-            "program_state": self._on_program_state,
-        }
+        self.handlers["step"] = self._on_step
         logger.info("ik: %s, %d collision pairs", self.robot.names, len(self.robot.geom.collisionPairs))
-
-    # -- node protocol -------------------------------------------------------
-
-    def start(self, node: Node) -> None:
-        self.node = node
-        self._set_state("ready")
-
-    def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node."""
-        return self._handlers[event["id"]](event)  # KeyError on an unwired input id is a wiring bug
-
-    def close(self) -> None:
-        pass
 
     # -- inputs --------------------------------------------------------------
 
@@ -114,8 +105,16 @@ class IkMode:
         self.node.send_output("joint_target", pa.array(self._ik.q, type=pa.float64()), metadata=metadata)
         return False
 
-    def _on_program_state(self, event: dict) -> bool:
-        return event["value"][0].as_py() == "disconnect"
+    def on_program_state(self, event: dict) -> bool:
+        """A new program state starts the command over at the measured joints, with no target:
+        nothing from an earlier stage drags the robot."""
+        value = event["value"][0].as_py()
+        if value != self.program_state:
+            self.program_state = value
+            self._ik, self._target, self._last_target, self._held = None, None, None, None
+            self._driven[:] = False
+            self._poses.clear()
+        return super().on_program_state(event)
 
     # -- helpers -------------------------------------------------------------
 
@@ -154,9 +153,8 @@ class IkMode:
             raise ValueError(f"{element}: a pose is [x, y, z, qx, qy, qz, qw], got {len(values)} values")
         task = self._poses.get(frame)
         if task is None:
-            task = self._poses[frame] = FrameTask(
-                frame, position_cost=self.opts.position_cost, orientation_cost=self.opts.orientation_cost
-            )
+            # a pose's errors weigh per metre and per radian against a joint target's (1 per radian)
+            task = self._poses[frame] = FrameTask(frame, position_cost=1.0, orientation_cost=0.5)
             logger.info("ik: pose target for %s in %s", frame, reference)
         world_reference = self._ik.get_transform_frame_to_world(reference)
         task.set_target(world_reference * pin.XYZQUATToSE3(values))
@@ -164,7 +162,8 @@ class IkMode:
     def _step(self, dt: float) -> None:
         """Move the command one IK step toward the targets, unless that step is unsafe."""
         self._posture.set_target(np.where(self._driven, self._target, self._ik.q))
-        self._posture.cost = np.where(self._driven, 1.0, self.opts.posture_cost)
+        # joints no joint target names are held only loosely, so a pose target moves them freely
+        self._posture.cost = np.where(self._driven, 1.0, 1e-3)
         tasks = [self._posture, *self._poses.values()]
         try:
             v = pink.solve_ik(
@@ -185,9 +184,3 @@ class IkMode:
         if self._held != reason:
             logger.warning("ik: holding, %s", reason)
         self._held = reason
-
-    def _set_state(self, state: str) -> None:
-        """Edge-triggered node_state: emitted only when the state changes."""
-        if state != self.state:
-            self.state = state
-            self.node.send_output("node_state", pa.array([state]))

@@ -33,7 +33,3 @@ class ManagerConfig(BaseSettings):
 
     # Which program lifecycle runs, and its settings.
     mode: ModeConfig = Field(default_factory=SimpleModeConfig, discriminator="name")
-
-
-def load_config() -> ManagerConfig:
-    return ManagerConfig(_cli_parse_args=True)

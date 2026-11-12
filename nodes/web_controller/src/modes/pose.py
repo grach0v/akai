@@ -1,12 +1,14 @@
-"""`pose` mode: jog a frame's pose (the TCP) from the page, the other joints in joint space.
+"""`pose` mode: drive a frame's pose (the TCP) from the page, the other joints in joint space.
 
-Like `joint` mode, but the joints moving `frame` get jog buttons instead of sliders. Every `tick`
-(the teleop clock) moves the target pose by the held jog; every observation is answered with
+Like `joint` mode, but the joints moving `frame` get a -/+ per pose axis instead of sliders:
+a click moves the target pose by `linear_step` along the reference frame's x, y or z, or by
+`step` radians about the frame's own x, y or z. Every observation is answered with
 `pose_target` (the pose of `frame` in `reference`) and `joint_target` for the other joints, both
-with the observation's `step`. The target starts at the measured pose (forward kinematics of the
-measured joints) and stays within `max_lead` / `max_lead_angle` of it.
+with the observation's `step`; pink decides how the robot gets there. The target starts at the
+measured pose (forward kinematics of the measured joints) and goes back to it on Sync and on
+every program-state change.
 
-Inputs:  observation, tick, program_state.
+Inputs:  observation, program_state.
 Outputs: pose_target, joint_target, node_state.
 """
 
@@ -63,13 +65,13 @@ def readable(pose: pin.SE3) -> list[float]:
 
 
 class PoseBoard(Board):
-    """The joint board plus the pose: measured, target and the jog the page holds."""
+    """The joint board plus the pose: measured and target."""
 
-    def __init__(self, opts: PoseModeConfig, kinematics: Kinematics):
-        super().__init__(opts, exclude=frozenset(kinematics.joints))
+    def __init__(self, urdf: Path, opts: PoseModeConfig, kinematics: Kinematics):
+        super().__init__(urdf, opts.step, exclude=frozenset(kinematics.joints))
+        self._opts = opts
         self._measured_pose: pin.SE3 | None = None
         self._target_pose: pin.SE3 | None = None
-        self._jog = np.zeros(6)  # -1, 0 or 1 per axis: x, y, z, then about the frame's x, y, z
 
     # -- from the dora loop --------------------------------------------------
 
@@ -79,25 +81,6 @@ class PoseBoard(Board):
             self._measured_pose = pose
             if self._target_pose is None:
                 self._target_pose = pose.copy()
-
-    def jog(self, dt: float) -> None:
-        """Move the target by the held jog over `dt` seconds, while the program is running."""
-        with self._lock:
-            if self._program_state != "running" or self._target_pose is None or not self._jog.any():
-                return
-            o = self._opts
-            target = self._target_pose
-            translation = target.translation + self._jog[:3] * o.linear_speed * dt
-            rotation = target.rotation @ pin.exp3(self._jog[3:] * o.angular_speed * dt)
-            # within the lead of the measured pose
-            measured = self._measured_pose
-            lead = translation - measured.translation
-            if np.linalg.norm(lead) > o.max_lead:
-                translation = measured.translation + lead * o.max_lead / np.linalg.norm(lead)
-            turn = pin.log3(measured.rotation.T @ rotation)
-            if np.linalg.norm(turn) > o.max_lead_angle:
-                rotation = measured.rotation @ pin.exp3(turn * o.max_lead_angle / np.linalg.norm(turn))
-            self._target_pose = pin.SE3(rotation, translation)
 
     def pose_target(self) -> np.ndarray | None:
         """The target pose as [x, y, z, qx, qy, qz, qw] while the program is running, else None."""
@@ -117,52 +100,46 @@ class PoseBoard(Board):
                     "reference": self._opts.reference,
                     "measured": readable(self._measured_pose),
                     "target": readable(self._target_pose),
-                    "jog": self._jog.tolist(),
                 }
         return snap
 
     def command(self, msg: dict) -> None:
-        """`{"type": "jog", "axes": [6 values in -1..1]}`, or a `joint` mode message."""
-        if msg["type"] != "jog":
+        """`{"type": "pose", "axis": 0-5, "dir": -1 or 1}`: one click on a pose axis (x, y, z, then
+        about the frame's x, y, z), or a `joint` mode message."""
+        if msg["type"] != "pose":
             return super().command(msg)
-        axes = np.asarray(msg["axes"], dtype=float)
-        if axes.shape != (6,):
-            logger.warning("page sent a jog of %d axes, not 6", axes.size)
-            return
+        axis, sign = int(msg["axis"]), float(np.sign(msg["dir"]))
         with self._lock:
-            self._jog = np.clip(axes, -1.0, 1.0)
-
-    def page_closed(self) -> None:
-        with self._lock:
-            self._jog[:] = 0.0
+            if self._target_pose is None:
+                return  # no measured pose yet
+            delta = np.zeros(3)
+            delta[axis % 3] = sign
+            target = self._target_pose
+            if axis < 3:
+                self._target_pose = pin.SE3(
+                    target.rotation, target.translation + delta * self._opts.linear_step
+                )
+            else:
+                self._target_pose = pin.SE3(
+                    target.rotation @ pin.exp3(delta * self._opts.step), target.translation
+                )
 
     def _reset(self) -> None:
         super()._reset()
-        self._jog[:] = 0.0
         if self._measured_pose is not None:
             self._target_pose = self._measured_pose.copy()
 
 
 class PoseMode(JointMode):
     def __init__(self, cfg: WebControllerConfig):
-        self.kinematics = Kinematics(cfg.mode.urdf, cfg.mode.frame, cfg.mode.reference)
+        self.kinematics = Kinematics(cfg.urdf, cfg.mode.frame, cfg.mode.reference)
         logger.info("pose: %s in %s, moved by %s", cfg.mode.frame, cfg.mode.reference, self.kinematics.joints)
         super().__init__(cfg)
-        self._handlers["tick"] = self._on_tick
-        self._last_tick: float | None = None  # monotonic
 
-    def _board(self) -> PoseBoard:
-        return PoseBoard(self.opts, self.kinematics)
+    def _board(self, urdf: Path) -> PoseBoard:
+        return PoseBoard(urdf, self.opts, self.kinematics)
 
     # -- inputs --------------------------------------------------------------
-
-    def _on_tick(self, event: dict) -> bool:
-        """The teleop clock: jog the target, nothing else."""
-        now = time.monotonic()
-        if self._last_tick is not None:
-            self.board.jog(min(now - self._last_tick, 0.1))
-        self._last_tick = now
-        return False
 
     def _on_observation(self, event: dict) -> bool:
         """Update the measured joints and pose from the observation, and answer it."""
@@ -177,7 +154,7 @@ class PoseMode(JointMode):
         if pose is not None:
             self.board.measured_pose(pose)
         if self.board.disconnect_requested:
-            self._set_state("disconnect")
+            self.set_state("disconnect")
         answer = {"step": md["step"], "capture_time": time.time()}
         target = self.board.pose_target()
         if target is not None:

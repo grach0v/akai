@@ -1,6 +1,6 @@
-# A simulated UR10e + 2F-85 driven by its TCP pose from a web page (hold the jog buttons), IK in
-# pink, recorded to .rrd and shown live. The web controller's own tick (the teleop clock) only
-# moves its target; the target goes out as the answer to the next observation.
+# A simulated UR10e + 2F-85 driven by its TCP pose from a web page (a -/+ per pose axis), IK in
+# pink, recorded to .rrd and shown live. A click moves the page's target; the target goes out as
+# the answer to the next observation.
 #
 # One cycle per tick (dora/timer/millis/33, the only robot clock):
 # 1. sim sends the joint states and images of one instant;
@@ -53,8 +53,6 @@ nodes:
       MODE__NAME: "step"   # one 33 ms period per tick, advanced as soon as the command comes
       MODE__PERIOD: "0.033"   # the tick's interval
       MODE__CAMERAS: '["cam_overhead", "cam_wrist"]'
-      MODE__WIDTH: "640"
-      MODE__HEIGHT: "480"
       MODE__ENCODING: "jpeg"
       MODE__JPEG_QUALITY: "80"
       MODE__RENDER_FLAGS: '{"SHADOW": false, "REFLECTION": false, "SKYBOX": false, "FOG": false, "HAZE": false}'
@@ -65,8 +63,6 @@ nodes:
     args: ../../../nodes/web_controller/src/main.py
     inputs:
       program_state: manager/program_state
-      # the teleop clock: moves the target pose by the held jog, sends nothing
-      tick: { source: dora/timer/millis/33, queue_size: 1, queue_policy: drop_oldest }
       # answered with the operator's target_t; its joint states give the measured pose
       observation: { source: observation/observation, queue_size: 1, queue_policy: drop_oldest }
     outputs: [pose_target, joint_target, node_state]
@@ -74,7 +70,7 @@ nodes:
       HOST: "127.0.0.1"
       PORT: "8000"
       MODE__NAME: "pose"
-      MODE__SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF: kinematics, slider ranges
+      SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF: kinematics, slider ranges
       MODE__FRAME: "tcp"   # the tool centre point, between the finger pads
       MODE__REFERENCE: "base_link"
 
@@ -144,7 +140,6 @@ nodes:
       MODE__NAME: "record"
       MODE__GRPC_PORT: "9876"
       MODE__INPUT_TIME: "capture_time"   # producers stamp it: log when the data was taken, not sent
-      MODE__VIDEO_FPS: "30"
       MODE__JOINT_STATES: '["observation/arm_joint_state", "observation/gripper_joint_state"]'
       # one plot per joint: measured (the observation) and the safe command, the gripper's target too
       MODE__PLOTS: >-

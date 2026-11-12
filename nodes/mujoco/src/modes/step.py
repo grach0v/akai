@@ -17,9 +17,10 @@ import time
 from collections.abc import Callable
 
 import mujoco
+from akai_node import Worker
 
 from config import MujocoConfig
-from modes.sim import SimMode, Worker
+from modes.sim import SimMode
 
 logger = logging.getLogger("mujoco")
 
@@ -100,7 +101,7 @@ class StepMode(SimMode):
 
     def _on_tick(self, event: dict) -> bool:
         if any(worker.ended for worker in self._workers):
-            self._set_state("finished")  # a background thread died; its traceback is in the log
+            self.set_state("finished")  # a background thread died; its traceback is in the log
             return False
         self._advance()  # no command started it: advance on the last targets
         done = self.physics.result()  # ready by now when a command started it

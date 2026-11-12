@@ -1,7 +1,7 @@
 # Smallest useful program: one camera recorded to .rrd and shown live, with the
 # manager owning the lifecycle.
 #
-#   manager       <-- cam_high/cam_high_node_state, rerun_record/node_state, rerun_viewer/node_state
+#   manager       <-- cam_high/node_state, rerun_record/node_state, rerun_viewer/node_state
 #   manager       --> program_state --> cam_high, rerun_record, rerun_viewer
 #   cam_high      --> cam_high_image --> rerun_record
 #   rerun_record  --> out/rrd/<app_id>_<time>.rrd (H.264)  +  gRPC server :9876 (JPEG, live)
@@ -26,7 +26,7 @@ nodes:
     path: ../../../nodes/manager/.venv/bin/python
     args: ../../../nodes/manager/src/main.py
     inputs:
-      cam_high: cam_high/cam_high_node_state
+      cam_high: cam_high/node_state
       rerun_record: rerun_record/node_state
       rerun_viewer: rerun_viewer/node_state
     outputs: [program_state]
@@ -42,7 +42,7 @@ nodes:
       # faster than the camera: a captured frame waits at most 10 ms; the slot is taken once, so no duplicates
       tick: { source: dora/timer/millis/10, queue_size: 1, queue_policy: drop_oldest }
       program_state: manager/program_state
-    outputs: [cam_high_image, cam_high_node_state]
+    outputs: [cam_high_image, node_state]
     env:
       CAMERA_NAME: "cam_high"
       MODE__NAME: "camera"
@@ -65,7 +65,6 @@ nodes:
       MODE__NAME: "record"
       MODE__GRPC_PORT: "9876"
       MODE__INPUT_TIME: "capture_time"   # producers stamp it: log when the data was taken, not sent
-      MODE__VIDEO_FPS: "30"
 
   - id: rerun_viewer
     build: uv sync --project ../../../nodes/rerun

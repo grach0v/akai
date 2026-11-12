@@ -12,6 +12,7 @@ description = "Dora node moving the robot toward joint and pose targets on its U
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "akai_node",
     "akai_scene",
     "akai_tuple",
     "daqp",
@@ -27,6 +28,7 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
+akai_node = { path = "../../libs/akai_node", editable = true }   # the node runtime
 akai_scene = { path = "../../libs/akai_scene", editable = true }   # the scene file format
 akai_tuple = { path = "../../libs/akai_tuple", editable = true }   # the tuple format
 

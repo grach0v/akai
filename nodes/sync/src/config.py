@@ -8,86 +8,46 @@ wins over the env.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from bundler import Action, SkewTime
+
+def _no_dot(inputs: list[str]) -> list[str]:
+    """An input's metadata goes out as `<input id>.<key>`: a `.` in an id would be ambiguous."""
+    dotted = [i for i in inputs if "." in i]
+    if dotted:
+        raise ValueError(f"input ids must not contain '.': {dotted}")
+    return inputs
 
 
-class TupleModeConfig(BaseModel):
-    """`tuple` mode: one message holding a new message from every input."""
-
-    model_config = ConfigDict(extra="forbid")  # a variable meant for another mode is a mistake
-
-    name: Literal["tuple"] = "tuple"
-    # The input ids to bundle; each becomes a field of the tuple, in this order. A JSON
-    # list in the env: MODE__INPUTS='["arm_joint_target", "gripper_joint_target"]'.
-    inputs: list[str] = Field(min_length=1)
-    # Output id of the tuple.
-    output: str
-    # What to do when an input sends again before its tuple is complete, so its previous
-    # message is dropped (e.g. a fast producer waiting on a slow one): "ignore", "warn"
-    # (for every repeated message) or "error" (stop the node).
-    on_repeat: Action = "ignore"
-    # The most the messages of one tuple may be apart in time, in seconds: more means a
-    # producer lags its peers. None: not checked.
-    max_skew: float | None = Field(None, gt=0)
-    # What to do when a tuple is over max_skew: "ignore", "warn" (once when the skew
-    # appears) or "error" (stop the node).
-    on_skew: Action = "warn"
-    # Metadata key skew is measured by (a datetime or seconds since the epoch); every input needs it.
-    skew_time: SkewTime = "capture_time"
-
-    @field_validator("inputs")
-    @classmethod
-    def _no_dot(cls, inputs: list[str]) -> list[str]:
-        """An input's metadata goes out as `<input id>.<key>`: a `.` in an id would be ambiguous."""
-        dotted = [i for i in inputs if "." in i]
-        if dotted:
-            raise ValueError(f"input ids must not contain '.': {dotted}")
-        return inputs
+# The inputs to join; each becomes a field of the tuple, in this order. A JSON list in the env.
+Inputs = Annotated[list[str], Field(min_length=1), AfterValidator(_no_dot)]
 
 
 class AlignModeConfig(BaseModel):
     """`align` mode: one tuple per reference time, of every input's sample captured nearest it."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")  # a variable meant for another mode is a mistake
 
     name: Literal["align"] = "align"
     # The input whose messages give the reference times, one tuple each: a dora timer, or the
     # clocked producer's own stream (the robot's joint state), which may also be one of `inputs`.
     reference: str
     # Metadata key of a reference message's time; a dora timer only has `timestamp`.
-    reference_time: SkewTime = "timestamp"
-    # The inputs to align; each becomes a field of the tuple, in this order. A JSON list in the env.
-    inputs: list[str] = Field(min_length=1)
+    reference_time: str = "timestamp"
+    inputs: Inputs
     # Metadata key of an input message's time. Late producers (a camera, a render) need a capture
     # time like `capture_time` to line up; dora's send `timestamp` is on every message.
-    input_time: SkewTime = "timestamp"
+    input_time: str = "timestamp"
     # Output id of the tuple.
     output: str
-    # How long each input's samples are kept to choose from, in seconds.
-    history: float = Field(1.0, gt=0)
-    # How long a reference time waits for every input to send a sample captured at or after it
-    # (which settles which sample is nearest), in seconds; after that, the nearest one so far.
-    timeout: float = Field(0.2, gt=0)
-    # The most an element's capture_time may be off its tuple's reference time, in seconds:
-    # more means a producer lags or stopped. None: not checked.
+    # The most an element's time may be off its tuple's reference time, in seconds: more means a
+    # producer lags or stopped. None: not checked.
     max_skew: float | None = Field(None, gt=0)
-    # What to do with a tuple that has elements over max_skew: "ignore", "warn" (one line per such
-    # tuple) or "error" (stop the node).
-    on_skew: Action = "warn"
-
-    @field_validator("inputs")
-    @classmethod
-    def _no_dot(cls, inputs: list[str]) -> list[str]:
-        """An input's metadata goes out as `<input id>.<key>`: a `.` in an id would be ambiguous."""
-        dotted = [i for i in inputs if "." in i]
-        if dotted:
-            raise ValueError(f"input ids must not contain '.': {dotted}")
-        return inputs
+    # A tuple over max_skew: "warn" (one line per such tuple) or "error" (stop the node).
+    on_skew: Literal["warn", "error"] = "warn"
 
 
 class StepModeConfig(BaseModel):
@@ -96,31 +56,16 @@ class StepModeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Literal["step"] = "step"
-    # The inputs to join; each needs `step` on every message. Each becomes a field of the tuple,
-    # in this order, or several: an input that is a tuple is joined in flat. A JSON list in the env.
-    inputs: list[str] = Field(min_length=1)
+    # Every message needs `step`. An input that is a tuple is joined in flat.
+    inputs: Inputs
     # The elements of the joined tuple to send on, in this order, so a consumer gets only what it
     # uses (the joint states, not an observation's images). None: every element. A JSON list in the env.
     elements: list[str] | None = Field(None, min_length=1)
     # Output id of the tuple.
     output: str
-    # What to do with a step some input never sent, dropped once a newer one completes:
-    # "ignore", "warn" (one line per step) or "error" (stop the node).
-    on_drop: Action = "warn"
-    # How many incomplete steps may wait for their missing inputs; the oldest is dropped beyond.
-    max_pending: int = Field(30, gt=0)
-
-    @field_validator("inputs")
-    @classmethod
-    def _no_dot(cls, inputs: list[str]) -> list[str]:
-        """An input's metadata goes out as `<input id>.<key>`: a `.` in an id would be ambiguous."""
-        dotted = [i for i in inputs if "." in i]
-        if dotted:
-            raise ValueError(f"input ids must not contain '.': {dotted}")
-        return inputs
 
 
-ModeConfig = TupleModeConfig | AlignModeConfig | StepModeConfig  # discriminated by `name`
+ModeConfig = AlignModeConfig | StepModeConfig  # discriminated by `name`
 
 
 class SyncConfig(BaseSettings):
@@ -128,7 +73,3 @@ class SyncConfig(BaseSettings):
 
     # Which mode runs, and its settings.
     mode: ModeConfig = Field(discriminator="name")
-
-
-def load_config() -> SyncConfig:
-    return SyncConfig(_cli_parse_args=True)

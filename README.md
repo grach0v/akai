@@ -74,7 +74,7 @@ uv run dora run   dataflows/examples/mujoco_web_rerun/mujoco_web_rerun.yml
 A UR10e with a Robotiq 2F-85 in MuJoCo. Open http://127.0.0.1:8000 to drive
 its joints and gripper; rerun shows the cameras, the robot in 3D and joint
 plots, and records everything to `out/rrd/`. `mujoco_web_rerun_depth` adds depth
-images; `mujoco_web_pose` jogs the tool centre point instead, with IK in pink.
+images; `mujoco_web_pose` moves the tool centre point instead, with IK in pink.
 
 To replay a recording, open it with the robot model as an asset:
 
@@ -106,7 +106,7 @@ uv run --project nodes/rerun rerun --asset <out>/rrd/ur10e_tabletop.model.rrd <o
 - **Nodes often have multiple modes** they can load, to serve different use
   cases from one node.
 - **The manager node owns the program state.** It collects state reports from
-  the other nodes (`<name>_node_state`, edge-triggered tokens such as `ready`
+  the other nodes (their `node_state`, edge-triggered tokens such as `ready`
   and `finished`) and emits the new `program_state`; the other nodes receive
   that state as an input, tear down on `disconnect`, and report important
   changes back to the manager — for example connecting to a robot, or
@@ -150,7 +150,7 @@ Nodes never read meaning from ids; ids just follow one convention, per *part*
 | `<part>_joint_state` | `float64[n]` measured joint positions | robot/sim → consumers |
 | `joint_target` | joint position setpoints for any joints of the robot: a named vector (`names` says which) | controller → robot/sim, `queue_size: 1, queue_policy: drop_oldest`; one input for the whole robot |
 | `pose_target` | a pose target (`frame` says which frame) | controller → pink |
-| `node_state` / `<name>_node_state` | `utf8[1]` token (`ready`, `finished`, `disconnect`) | every node → manager, edge-triggered |
+| `node_state` | `utf8[1]` token (`ready`, `finished`, `disconnect`) | every node → manager, edge-triggered |
 | `program_state` | `utf8[1]` (`boot`, `running`, `disconnect`) | manager → every node |
 
 Poses name their frames by URDF link, so every node that loads the URDF reads
@@ -189,7 +189,9 @@ assets/                            # formats and how to make them: assets/README
       calibration.yaml             # its cameras
       <cell>.urdf, <cell>.xml      # built: its kinematics and simulation
 libs/                              # Python packages shared by nodes (uv path dependencies)
-  akai_scene/                      # the scene file format (a package the nodes depend on)
+  akai_node/                       # the node runtime: event loop, mode protocol, background workers
+  akai_scene/                      # the scene file format
+  akai_tuple/                      # the tuple format `sync` emits
 .claude/skills/                    # agent skills; rerun-* are vendored from rerun (scripts/sync_rerun_skills.py)
 .agents/skills -> .claude/skills   # the same skills for Codex, Cursor and other agents
 scripts/                           # repo maintenance scripts
@@ -211,7 +213,7 @@ dataflows/                         # runnable programs, one directory each
     mujoco_web_rerun_depth/
       mujoco_web_rerun_depth.yml   # the same, with depth images from the RGB-D cameras
     mujoco_web_pose/
-      mujoco_web_pose.yml          # the same robot driven by its TCP pose (jogged on the page), IK in pink
+      mujoco_web_pose.yml          # the same robot driven by its TCP pose (−/+ per axis on the page), IK in pink
   teleoperation/                   # planned
     <robot family>/                # e.g. trossen
       <robot name>/                # e.g. trossen_stationary
@@ -224,7 +226,7 @@ nodes/
     pyproject.toml                 # plus uv.lock
     README.md                      # node docs, including its message formats and config
     src/
-      main.py                      # plain script: config -> mode -> Node -> loop, identical in every node
+      main.py                      # plain script: `run(MODES, Config)` from akai_node
       config.py                    # pydantic-settings config (mode, name, fps, resolution, ...)
       modes/
         <mode name>.py             # one mode = one behaviour; the default is the node's main job
@@ -263,12 +265,12 @@ when all three are checked.
 | `realsense-camera` | Intel RealSense color + optional depth. | - | - | - |
 | `pink` | IK on the URDF with **pink**: answers each step's joint or pose targets with a command one step toward them, speed-limited and collision-free. | - | x | - |
 | `mujoco` | **MuJoCo** sim: `joint_target` in, joint states and camera images of one instant out on each tick. `sim` mode runs in real time, `step` mode one fixed period per tick. | - | x | - |
-| `sync` | Joins streams into one *tuple* (an Arrow struct, a field per input). `tuple`: when every input has a new message. `align`: every input's sample nearest a reference time (observations). `step`: the messages of one `step`. | - | x | x |
+| `sync` | Joins streams into one *tuple* (an Arrow struct, a field per input). `align`: every input's sample nearest a reference time (observations). `step`: the messages of one `step`. | - | x | x |
 | `trossen-robot` | The **real** Trossen robot, **one arm per node** (`NAME`+`IP`, `MODE`=follower/leader; `base` mode TODO for the `trossen-slate` mobile base): a follower streams per-part `joint_target` from pink (joint control only); a leader publishes its hand-moved state. | - | - | - |
 | `ur5e-robot` | The **real** UR5e, **one arm per node** (`NAME`+`IP`): servoJ streaming of per-part `joint_target` with joint-jump guards; optional Robotiq gripper. | - | - | - |
 | `lerobot` | Records cameras + the `state` bundle + the `command` bundle into a `LeRobotDataset` (with video). | - | - | - |
 | `rerun` | `record` writes every stream to an `.rrd` (cameras as H.264) and serves it live: joint plots, the URDF robot in 3D with its cameras and poses. `visualize` opens a viewer on that server. | - | x | x |
-| `web_controller` | A web page answering each observation with a target. `joint` mode: a slider per joint. `pose` mode: jog buttons for the TCP pose. Planned: `episode`. | - | x | - |
+| `web_controller` | A web page answering each observation with a target. `joint` mode: a slider per joint. `pose` mode: −/+ per axis of the TCP pose. Planned: `episode`. | - | x | - |
 
 ## Roadmap
 

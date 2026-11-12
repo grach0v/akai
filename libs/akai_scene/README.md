@@ -46,7 +46,7 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
    from akai_scene import load_scene, one_of
 
    class RecordModeConfig(BaseModel):
-       robot_urdf: Path | None = None    # MODE__ROBOT_URDF
+       urdf: Path | None = None          # MODE__URDF
        calibration: Path | None = None   # MODE__CALIBRATION
        scene: Path | None = None         # MODE__SCENE: gives both instead
 
@@ -54,7 +54,7 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
        def _from_scene(self):
            if self.scene is not None:
                scene = load_scene(self.scene)
-               self.robot_urdf = one_of("MODE__ROBOT_URDF", self.robot_urdf, self.scene, scene.urdf)
+               self.urdf = one_of("MODE__URDF", self.urdf, self.scene, scene.urdf)
                self.calibration = one_of("MODE__CALIBRATION", self.calibration, self.scene, scene.calibration)
            return self
    ```
@@ -67,7 +67,7 @@ URDF, resolving parts in the MJCF, ...) is each node's business.
        raise ValueError("the sliders need the robot's URDF: MODE__URDF, or a MODE__SCENE file with `urdf`")
    ```
 
-3. The rest of the node only reads its config fields (`opts.robot_urdf`, ...)
+3. The rest of the node only reads its config fields (`opts.urdf`, ...)
    and never knows whether they came from a scene file.
 
 Parts work the same way: the `mujoco` node has `MODEL` and `PARTS` fields:
@@ -111,7 +111,7 @@ cell as `assets/cells/ur10e_tabletop/scene.yaml`, by hand:
 
   - id: rerun_record
     env:
-      MODE__ROBOT_URDF: "../../../assets/cells/ur10e_tabletop/ur10e_tabletop.urdf"
+      MODE__URDF: "../../../assets/cells/ur10e_tabletop/ur10e_tabletop.urdf"
       MODE__CALIBRATION: "../../../assets/cells/ur10e_tabletop/calibration.yaml"
 ```
 

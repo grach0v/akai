@@ -19,9 +19,9 @@ is unpacked into its elements, `<input>/<field>`, each with its own metadata (th
 
     encoding rgb8 / jpeg      -> file: rr.VideoStream (H.264), live: rr.EncodedImage
     encoding uint16           -> rr.DepthImage (millimetres)
-    numeric, in joint_states  -> rr.Scalars, and the 3D robot's joints (with `robot_urdf`)
+    numeric, in joint_states  -> rr.Scalars, and the 3D robot's joints (with `urdf`)
     numeric, with `frame`     -> a pose [x, y, z, qx, qy, qz, qw] in the URDF frame `reference`:
-                                 axes in 3D (with `robot_urdf`), see `_log_pose`
+                                 axes in 3D (with `urdf`), see `_log_pose`
     anything else numeric     -> rr.Scalars, series named by `names`
 
 Every message is logged at its time by `input_time`, on a timeline of that name: dora's send
@@ -32,7 +32,7 @@ sent for it. A stream is logged at the entity
 named like it (`arm_joint_state`, `observation/cam_high`), and a stream missing a key its role
 requires stops the node with an error naming it.
 
-With `robot_urdf` set, the robot is shown in 3D under `robot/` (see robot.py),
+With `urdf` set, the robot is shown in 3D under `robot/` (see robot.py),
 split the way the `rerun-data-model` / `rerun-urdf` skills split a robot dataset:
 
     <recording>.rrd          base: the raw streams, as above
@@ -42,8 +42,8 @@ split the way the `rerun-data-model` / `rerun-urdf` skills split a robot dataset
 The live viewer gets all three. An image whose `camera` is in the `calibration` file is placed
 in the robot's frames and drawn inside its frustum in 3D; see `log_calibration`.
 
-The viewer layout (blueprint) is the `blueprint` file's, or generated from the robot, the plots
-and the cameras, and sent again when a new camera appears.
+The viewer layout (blueprint) is generated from the robot, the plots and the cameras, and sent
+again when a new camera or pose appears.
 
 Inputs:  program_state, plus any stream wired in the dataflow (give them a deep queue:
          a recorder must not drop messages).
@@ -53,9 +53,6 @@ Outputs: node_state (`ready`).
 from __future__ import annotations
 
 import logging
-import runpy
-import socket
-from collections.abc import Callable
 from datetime import datetime
 
 import av
@@ -63,46 +60,39 @@ import numpy as np
 import pyarrow as pa
 import rerun as rr
 import rerun.blueprint as rrb
+from akai_node import Mode, message_time, port_open
 from akai_scene import CameraCalibration, load_calibration
 from akai_tuple import elements
-from dora import Node
 from rerun.chunk import OptimizationProfile
 
-from config import RecordModeConfig, RerunConfig
+from config import RerunConfig
 from robot import RobotUrdf
 
 logger = logging.getLogger("rerun")
 
 
-def listening(bind_ip: str, port: int) -> bool:
-    """True if something already accepts TCP connections where a server bound to bind_ip:port
-    would be reached: bind_ip itself, or 127.0.0.1 for 0.0.0.0. Connecting, not binding: a
-    wildcard bind succeeds next to a server on 127.0.0.1:port, which then keeps local viewers."""
-    host = "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.25)
-        return s.connect_ex((host, port)) == 0
-
-
 class H264Encoder:
-    """libx264 for one camera. Yields Annex B samples with SPS/PPS in-band at
-    every keyframe, so a viewer can start decoding at any keyframe; B-frames
-    are off so samples arrive in display order."""
+    """libx264 for one camera stream (rgb8 or JPEG frames in). Yields Annex B samples with
+    SPS/PPS in-band at every keyframe (every 60 frames, 2 s at 30 fps), so a viewer can start
+    decoding at any keyframe; B-frames are off so samples arrive in display order. The frame
+    rate is only the encoder's time base: samples are logged at their own times."""
 
-    def __init__(self, width: int, height: int, opts: RecordModeConfig):
+    def __init__(self, width: int, height: int, preset: str):
         self._codec = av.CodecContext.create("libx264", "w")
         self._codec.width, self._codec.height = width, height
         self._codec.pix_fmt = "yuv420p"
-        self._codec.framerate = opts.video_fps
+        self._codec.framerate = 30
         self._codec.max_b_frames = 0
         self._codec.options = {
-            "preset": opts.h264_preset,
+            "preset": preset,
             "tune": "zerolatency",
-            "x264-params": f"keyint={opts.keyframe_interval}:min-keyint={opts.keyframe_interval}:scenecut=0:repeat-headers=1",
+            "x264-params": "keyint=60:min-keyint=60:scenecut=0:repeat-headers=1",
         }
+        self._jpeg: av.CodecContext | None = None  # the stream's JPEG decoder, once it sends one
         self._pts = 0
 
-    def encode(self, frame: av.VideoFrame) -> list[rr.VideoStream]:
+    def encode(self, data: np.ndarray, md: dict) -> list[rr.VideoStream]:
+        frame = self._decode(data, md)
         # A frame decoded from JPEG arrives typed as an I-frame and libx264 would
         # honour that, making every sample a keyframe; the viewer then restarts
         # its decoder on each one and never shows a frame. Let x264 decide.
@@ -118,16 +108,15 @@ class H264Encoder:
     def _sample(packet: av.Packet) -> rr.VideoStream:
         return rr.VideoStream.from_fields(sample=bytes(packet), is_keyframe=bool(packet.is_keyframe))
 
-
-def decode_image(data: np.ndarray, md: dict) -> av.VideoFrame:
-    """A dora image message as a yuv420p frame ready for the encoder."""
-    if md["encoding"] == "rgb8":
-        rgb = data.reshape(int(md["height"]), int(md["width"]), 3)
-        return av.VideoFrame.from_ndarray(rgb, format="rgb24").reformat(format="yuv420p")
-    if md["encoding"] == "jpeg":
-        (frame,) = av.CodecContext.create("mjpeg", "r").decode(av.Packet(data.tobytes()))
+    def _decode(self, data: np.ndarray, md: dict) -> av.VideoFrame:
+        """A dora image message as a yuv420p frame."""
+        if md["encoding"] == "rgb8":
+            rgb = data.reshape(int(md["height"]), int(md["width"]), 3)
+            return av.VideoFrame.from_ndarray(rgb, format="rgb24").reformat(format="yuv420p")
+        if self._jpeg is None:
+            self._jpeg = av.CodecContext.create("mjpeg", "r")
+        (frame,) = self._jpeg.decode(av.Packet(data.tobytes()))
         return frame.reformat(format="yuv420p")
-    raise ValueError(f"unsupported image encoding {md['encoding']!r}")
 
 
 def live_image(data: np.ndarray, md: dict, jpeg_quality: int) -> rr.EncodedImage:
@@ -135,10 +124,8 @@ def live_image(data: np.ndarray, md: dict, jpeg_quality: int) -> rr.EncodedImage
     when it sends JPEG, otherwise compressed here."""
     if md["encoding"] == "jpeg":
         return rr.EncodedImage(contents=data.tobytes(), media_type="image/jpeg")
-    if md["encoding"] == "rgb8":
-        rgb = data.reshape(int(md["height"]), int(md["width"]), 3)
-        return rr.Image(rgb, color_model="RGB").compress(jpeg_quality=jpeg_quality)
-    raise ValueError(f"unsupported image encoding {md['encoding']!r}")
+    rgb = data.reshape(int(md["height"]), int(md["width"]), 3)
+    return rr.Image(rgb, color_model="RGB").compress(jpeg_quality=jpeg_quality)
 
 
 def require(md: dict, stream: str, *keys: str) -> None:
@@ -146,14 +133,6 @@ def require(md: dict, stream: str, *keys: str) -> None:
     missing = [k for k in keys if k not in md]
     if missing:
         raise ValueError(f"{stream}: metadata has no {missing} (see the README's message conventions)")
-
-
-def message_time(md: dict, key: str, stream: str) -> float:
-    """The time under metadata `key`, in seconds since the epoch: a datetime (like dora's send
-    `timestamp`) or a number of seconds (like `capture_time`)."""
-    require(md, stream, key)
-    t = md[key]
-    return t.timestamp() if isinstance(t, datetime) else float(t)
 
 
 def log_calibration(recordings: list[rr.RecordingStream], stream: str, cal: CameraCalibration) -> None:
@@ -214,18 +193,15 @@ def build_blueprint(
     )
 
 
-class RecordMode:
+class RecordMode(Mode):
     def __init__(self, cfg: RerunConfig):
         """Open the file and the server before joining the dataflow."""
-        self.cfg = cfg
+        super().__init__()
         self.opts = opts = cfg.mode
-        self.node: Node | None = None
         self.encoders: dict[str, H264Encoder] = {}  # one per camera entity, created on its first frame
-        self._handlers: dict[str, Callable[[dict], bool]] = {
-            "program_state": self._on_program_state,
-        }
-        # rerun would only log a failed bind and record without serving
-        if listening(opts.bind_ip, opts.grpc_port):
+        # rerun would only log a failed bind and record without serving. Connecting, not binding:
+        # a wildcard bind succeeds next to a server on 127.0.0.1, which then keeps local viewers.
+        if port_open(opts.bind_ip, opts.grpc_port):
             raise RuntimeError(
                 f"port {opts.grpc_port} is taken (a leftover rerun viewer or recorder?). "
                 f"Close it or set MODE__GRPC_PORT to a free port."
@@ -240,15 +216,18 @@ class RecordMode:
         )
         self.live.set_sinks(
             rr.GrpcServerSink(
-                bind_ip=opts.bind_ip, port=opts.grpc_port, server_memory_limit=opts.server_memory_limit
+                # what the server buffers for late-joining viewers
+                bind_ip=opts.bind_ip,
+                port=opts.grpc_port,
+                server_memory_limit="256MB",
             )
         )
-        self.robot = RobotUrdf(opts.robot_urdf) if opts.robot_urdf else None
+        self.robot = RobotUrdf(opts.urdf) if opts.urdf else None
         self.fk: rr.RecordingStream | None = None
         if self.robot is not None:
-            model_path = opts.rrd_dir / f"{opts.robot_urdf.stem}.model.rrd"
+            model_path = opts.rrd_dir / f"{opts.urdf.stem}.model.rrd"
             self.robot.model().collect(optimize=OptimizationProfile.OBJECT_STORE).write_rrd(
-                model_path, application_id=cfg.app_id, recording_id=f"{opts.robot_urdf.stem}_model"
+                model_path, application_id=cfg.app_id, recording_id=f"{opts.urdf.stem}_model"
             )
             self.live.send_chunks(self.robot.model())
             # A layer of this recording: its own properties would collide with the base's in a catalog.
@@ -261,7 +240,6 @@ class RecordMode:
         self._images: list[str] = []  # image and depth streams, in the order they appeared
         self._calibrated_size: dict[str, tuple[int, int]] = {}  # stream -> the size it is calibrated for
         self._poses: list[str] = []  # pose streams, in the order they appeared
-        self._blueprint = runpy.run_path(str(opts.blueprint))["blueprint"] if opts.blueprint else None
         self._named: set[str] = set()  # series entities whose line label is logged
         self._send_layout()
         logger.info(
@@ -270,15 +248,9 @@ class RecordMode:
 
     # -- node protocol -------------------------------------------------------
 
-    def start(self, node: Node) -> None:
-        self.node = node
-        node.send_output("node_state", pa.array(["ready"]))
-
     def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node. A sink accepts any
-        input id: everything that is not a control input is a stream to record."""
-        handler = self._handlers.get(event["id"], self._on_stream)
-        return handler(event)
+        """A sink accepts any input id: everything but `program_state` is a stream to record."""
+        return self.handlers.get(event["id"], self._on_stream)(event)
 
     def close(self) -> None:
         for entity, encoder in self.encoders.items():
@@ -291,9 +263,6 @@ class RecordMode:
         logger.info("record: closed %s", self.path)
 
     # -- inputs --------------------------------------------------------------
-
-    def _on_program_state(self, event: dict) -> bool:
-        return event["value"][0].as_py() == "disconnect"
 
     def _on_stream(self, event: dict) -> bool:
         """One message: a tuple's elements, or a plain stream. A message with `step` (a tuple's, or
@@ -364,8 +333,7 @@ class RecordMode:
             if cal is not None and not depth:
                 log_calibration([self.file, self.live], stream, cal)
                 self._calibrated_size[stream] = (cal.width, cal.height)
-            if self._blueprint is None:
-                self._send_layout()  # with this camera, in 3D when calibrated
+            self._send_layout()  # with this camera, in 3D when calibrated
             in_3d = "3D" if stream in self._calibrated_size else "2D"
             logger.info("record: %s (camera %s, %s)", stream, md.get("camera"), in_3d)
         size = self._calibrated_size.get(stream)
@@ -375,17 +343,16 @@ class RecordMode:
             )
 
     def _send_layout(self) -> None:
-        """Send the viewer layout: the `blueprint` file's, or one generated from the robot, the
-        plots and the cameras seen so far (sent again when a new camera appears)."""
-        blueprint = self._blueprint
-        if blueprint is None and (self._images or self.robot is not None or self.opts.plots):
-            robot = f"/{self.robot.root}" if self.robot else None
-            blueprint = build_blueprint(
-                self._images, list(self._calibrated_size), self._poses, robot, self.opts.plots
-            )
-        if blueprint is not None:  # else: the viewer's automatic layout
-            for rec in (self.file, self.live):
-                rec.send_blueprint(blueprint)
+        """Send the viewer layout, generated from the robot, the plots and the cameras and poses
+        seen so far. With none of them yet: the viewer's automatic layout."""
+        if not (self._images or self.robot is not None or self.opts.plots):
+            return
+        robot = f"/{self.robot.root}" if self.robot else None
+        blueprint = build_blueprint(
+            self._images, list(self._calibrated_size), self._poses, robot, self.opts.plots
+        )
+        for rec in (self.file, self.live):
+            rec.send_blueprint(blueprint)
 
     # -- logging -------------------------------------------------------------
 
@@ -395,12 +362,13 @@ class RecordMode:
 
     def _log_image(self, entity: str, data: np.ndarray, md: dict) -> None:
         self.live.log(entity, live_image(data, md, self.opts.live_jpeg_quality))
-        frame = decode_image(data, md)
         encoder = self.encoders.get(entity)
         if encoder is None:
-            encoder = self.encoders[entity] = H264Encoder(frame.width, frame.height, self.opts)
+            encoder = self.encoders[entity] = H264Encoder(
+                int(md["width"]), int(md["height"]), self.opts.h264_preset
+            )
             self.file.log(entity, rr.VideoStream(codec=rr.VideoCodec.H264), static=True)
-        for sample in encoder.encode(frame):
+        for sample in encoder.encode(data, md):
             self.file.log(entity, sample)
 
     def _send_transforms(
@@ -428,8 +396,7 @@ class RecordMode:
                 rec.log(
                     stream, rr.CoordinateFrame(child), rr.TransformAxes3D(0.1, show_frame=True), static=True
                 )
-            if self._blueprint is None:
-                self._send_layout()
+            self._send_layout()
             logger.info("record: %s (pose of %s in %s)", stream, md["frame"], md["reference"])
         x, y, z, qx, qy, qz, qw = data.tolist()
         transform = rr.Transform3D(

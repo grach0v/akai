@@ -1,0 +1,26 @@
+# akai_node — what every node shares: the event loop, the mode protocol, background workers.
+#
+# A node depends on it by path, editable, so a change here reaches every node:
+#   dependencies = [..., "akai_node"]
+#   [tool.uv.sources]
+#   akai_node = { path = "../../libs/akai_node", editable = true }
+# The node pins dora-rs itself.
+[project]
+name = "akai_node"
+version = "0.1.0"
+description = "The akai node runtime: event loop, mode protocol and background workers shared by every node."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dora-rs",
+    "pyarrow",
+    "pydantic-settings>=2.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 110
+src = ["src"]

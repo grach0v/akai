@@ -21,18 +21,15 @@ from __future__ import annotations
 import logging
 import os
 import signal
-import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
-import pyarrow as pa
-from dora import Node
+from akai_node import Mode, port_open
 
-from config import RerunConfig, VisualizeModeConfig
+from config import RerunConfig
 
 logger = logging.getLogger("rerun")
 
@@ -45,30 +42,27 @@ def viewer_binary() -> Path:
     return path
 
 
-def wait_for_server(url: str, timeout: float) -> None:
+def wait_for_server(url: str, timeout: float = 15.0) -> None:
     """Block until the gRPC server behind `rerun+http://host:port/proxy` accepts TCP connections."""
     parsed = urlparse(url.removeprefix("rerun+"))
     deadline = time.monotonic() + timeout
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.5)
-            if s.connect_ex((parsed.hostname, parsed.port)) == 0:
-                return
+    while not port_open(parsed.hostname, parsed.port, timeout=0.5):
         if time.monotonic() > deadline:
             raise RuntimeError(f"no rerun server at {url} after {timeout}s (is the record node running?)")
         time.sleep(0.2)
 
 
-def start_viewer(opts: VisualizeModeConfig) -> subprocess.Popen:
+def start_viewer(url: str) -> subprocess.Popen:
     """Launch the viewer connected to the server url, in its own session so
     dora's stop neither waits on nor signals the window; its lifetime is ours
     (`stop_viewer`). `--connect` matters: a viewer always hosts a gRPC server of
     its own, and only with `--connect` does it pick a free port for it instead
     of the default 9876, which is the recorder's. The viewer's own output stays
-    on this node's stderr so a failure to open or connect shows in the dora log."""
-    wait_for_server(opts.server_url, opts.server_timeout)
+    on this node's stderr so a failure to open or connect shows in the dora log. Past 2 GB the
+    viewer drops its oldest data."""
+    wait_for_server(url)
     return subprocess.Popen(
-        [str(viewer_binary()), "--connect", opts.server_url, "--memory-limit", opts.memory_limit],
+        [str(viewer_binary()), "--connect", url, "--memory-limit", "2GB"],
         start_new_session=True,
     )
 
@@ -85,26 +79,13 @@ def stop_viewer(proc: subprocess.Popen) -> None:
         proc.wait(timeout=2)
 
 
-class VisualizeMode:
+class VisualizeMode(Mode):
     def __init__(self, cfg: RerunConfig):
         """Wait for the record server and open the viewer before joining the dataflow."""
-        self.opts = cfg.mode
-        self.node: Node | None = None
-        self.state: str | None = None
-        self._handlers: dict[str, Callable[[dict], bool]] = {
-            "tick": self._on_tick,
-            "program_state": self._on_program_state,
-        }
-        self._viewer = start_viewer(self.opts)
-        logger.info("visualize: viewer on %s", self.opts.server_url)
-
-    def start(self, node: Node) -> None:
-        self.node = node
-        self._set_state("ready")
-
-    def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node."""
-        return self._handlers[event["id"]](event)  # KeyError on an unwired input id is a wiring bug
+        super().__init__()
+        self.handlers["tick"] = self._on_tick
+        self._viewer = start_viewer(cfg.mode.server_url)
+        logger.info("visualize: viewer on %s", cfg.mode.server_url)
 
     def close(self) -> None:
         if self._viewer.poll() is None:  # still open: close it
@@ -112,14 +93,5 @@ class VisualizeMode:
 
     def _on_tick(self, event: dict) -> bool:
         if self._viewer.poll() is not None:  # the operator closed the window
-            self._set_state("finished")
+            self.set_state("finished")
         return False
-
-    def _on_program_state(self, event: dict) -> bool:
-        return event["value"][0].as_py() == "disconnect"
-
-    def _set_state(self, state: str) -> None:
-        """Edge-triggered node_state: emitted only when the state changes."""
-        if state != self.state:
-            self.state = state
-            self.node.send_output("node_state", pa.array([state]))

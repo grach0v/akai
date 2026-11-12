@@ -6,7 +6,7 @@
   When the device stops, it reports `finished` and waits for `disconnect` or STOP.
 
 Inputs:  tick (dora/timer), program_state (optional).
-Outputs: <camera_name>_image, <camera_name>_node_state.
+Outputs: <camera_name>_image, node_state.
 """
 
 from __future__ import annotations
@@ -14,13 +14,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 import pyarrow as pa
-from dora import Node
+from akai_node import Mode, Worker
 
 from config import CameraConfig
 
@@ -33,25 +32,19 @@ class Frame:
     metadata: dict  # camera, encoding, width, height, capture_time
 
 
-class CameraReader:
-    """Background capture thread keeping the latest encoded frame."""
+class CameraReader(Worker):
+    """Keeps the latest encoded frame; `ended` once the device stops delivering."""
 
     def __init__(self, cfg: CameraConfig):
+        super().__init__(f"{cfg.camera_name}-capture")
         self._name = cfg.camera_name
         self._opts = cfg.mode
         self._cap = self._open()
         self._lock = threading.Lock()
         self._latest: Frame | None = None
-        self._ended = threading.Event()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, name=f"{self._name}-capture", daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=2.0)
+        super().stop()
         self._cap.release()
 
     def take(self) -> Frame | None:
@@ -59,10 +52,6 @@ class CameraReader:
         with self._lock:
             frame, self._latest = self._latest, None
             return frame
-
-    @property
-    def ended(self) -> bool:
-        return self._ended.is_set()
 
     def _open(self) -> cv2.VideoCapture:
         opts = self._opts
@@ -112,7 +101,6 @@ class CameraReader:
             capture_time = time.time()
             if not ok:
                 logger.warning("%s: device stopped delivering frames", self._name)
-                self._ended.set()
                 return
             height, width = frame_bgr.shape[:2]
             metadata = {
@@ -127,26 +115,17 @@ class CameraReader:
                 self._latest = frame
 
 
-class CameraMode:
+class CameraMode(Mode):
     def __init__(self, cfg: CameraConfig):
         """Open the camera before joining the dataflow, so no tick arrives while it opens."""
+        super().__init__()
         self.name = cfg.camera_name
-        self.node: Node | None = None
         self.reader = CameraReader(cfg)
-        self.state: str | None = None
-        self._handlers: dict[str, Callable[[dict], bool]] = {
-            "tick": self._on_tick,
-            "program_state": self._on_program_state,
-        }
+        self.handlers["tick"] = self._on_tick
 
-    def start(self, node: Node) -> None:
-        self.node = node
+    def start(self, node) -> None:
         self.reader.start()
-        self._set_state("ready")
-
-    def handle(self, event: dict) -> bool:
-        """Dispatch one INPUT event. True means: stop the node."""
-        return self._handlers[event["id"]](event)  # KeyError on an unwired input id is a wiring bug
+        super().start(node)
 
     def close(self) -> None:
         self.reader.stop()
@@ -156,14 +135,5 @@ class CameraMode:
         if frame is not None:
             self.node.send_output(f"{self.name}_image", pa.array(frame.data), metadata=frame.metadata)
         if self.reader.ended:
-            self._set_state("finished")
+            self.set_state("finished")
         return False
-
-    def _on_program_state(self, event: dict) -> bool:
-        return event["value"][0].as_py() == "disconnect"
-
-    def _set_state(self, state: str) -> None:
-        """Edge-triggered node_state: emitted only when the state changes."""
-        if state != self.state:
-            self.state = state
-            self.node.send_output(f"{self.name}_node_state", pa.array([state]))

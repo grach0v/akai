@@ -51,8 +51,6 @@ nodes:
       MODE__NAME: "step"   # one 33 ms period per tick, advanced as soon as the command comes
       MODE__PERIOD: "0.033"   # the tick's interval
       MODE__CAMERAS: '["cam_overhead", "cam_wrist"]'
-      MODE__WIDTH: "640"
-      MODE__HEIGHT: "480"
       MODE__ENCODING: "jpeg"
       MODE__JPEG_QUALITY: "80"
       MODE__RENDER_FLAGS: '{"SHADOW": false, "REFLECTION": false, "SKYBOX": false, "FOG": false, "HAZE": false}'
@@ -70,7 +68,7 @@ nodes:
       HOST: "127.0.0.1"
       PORT: "8000"
       MODE__NAME: "joint"
-      MODE__SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF: slider ranges
+      SCENE: "../../../assets/cells/ur10e_tabletop/scene.yaml"   # the URDF: slider ranges
 
   - id: safety
     build: uv sync --project ../../../nodes/pink
@@ -136,7 +134,6 @@ nodes:
       MODE__NAME: "record"
       MODE__GRPC_PORT: "9876"
       MODE__INPUT_TIME: "capture_time"   # producers stamp it: log when the data was taken, not sent
-      MODE__VIDEO_FPS: "30"
       MODE__JOINT_STATES: '["observation/arm_joint_state", "observation/gripper_joint_state"]'
       # one plot per joint: measured (the observation), the operator's target and the safe command
       MODE__PLOTS: >-

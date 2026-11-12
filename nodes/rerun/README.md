@@ -24,7 +24,7 @@ the SDK's `import rerun`.
 ```
 pyproject.toml         # uv project: dora-rs, rerun-sdk==0.39.0, av (H.264), pydantic-settings
 src/config.py          # RerunConfig: node fields + `mode`, one config class per mode picked by MODE__NAME
-src/main.py            # dora skeleton, identical in every node: config -> mode -> Node -> loop
+src/main.py            # runs the modes (akai_node)
 src/robot.py           # a URDF shown in 3D, moved by joint states (record mode, rerun.urdf.UrdfTree)
 src/modes/record.py    # `record`: file recording (H.264) + live server (JPEG)
 src/modes/visualize.py # `visualize`: spawn the viewer on the server url, close it on stop
@@ -38,7 +38,7 @@ things:
 
 - **file**: a `FileSink` writing `<rrd_dir>/<recording>.rrd`.
   Cameras are recorded as H.264 (`rr.VideoStream`, libx264, a keyframe with
-  SPS/PPS every `keyframe_interval` frames so playback can start at any of them).
+  SPS/PPS every 60 frames so playback can start at any of them).
 - **live**: a `GrpcServerSink` at `rerun+http://<bind_ip>:<grpc_port>/proxy`
   with rerun's low-latency batcher. Cameras are sent as JPEG: the camera's own
   bytes when it already sends JPEG (no CPU spent), otherwise compressed here.
@@ -78,7 +78,7 @@ Messages are logged at `MODE__INPUT_TIME` (dora's `timestamp`, or
 recording has one row per observation with what was sent for it. A stream
 missing a required key stops the node.
 
-**3D robot** (`MODE__ROBOT_URDF`, via `rerun.urdf.UrdfTree`). Joint states move
+**3D robot** (`MODE__URDF`, via `rerun.urdf.UrdfTree`). Joint states move
 it by URDF joint name; mimic joints follow their driver. A session writes three
 files:
 
@@ -93,14 +93,7 @@ calibration file is drawn in its frustum in the 3D view, moving with the arm
 when mounted on it.
 
 **Layout**: cameras and the 3D view on top, plots below (`MODE__PLOTS`, or one
-plot of everything). `MODE__BLUEPRINT` can point at a Python file defining
-`blueprint` to replace it:
-
-```python
-import rerun.blueprint as rrb
-
-blueprint = rrb.Blueprint(rrb.Spatial2DView(origin="/observation/cam_wrist_image"))
-```
+plot of everything).
 
 Encoders are flushed and the file closed on stop.
 
@@ -122,23 +115,19 @@ Output `node_state`: `ready` once the sinks are up.
 | `MODE__RRD_DIR` | `out/rrd` | where the `.rrd` files go (recording, FK layer, robot model), relative to the dataflow directory |
 | `MODE__BIND_IP` | `0.0.0.0` | server bind address; `0.0.0.0` admits viewers from other machines |
 | `MODE__GRPC_PORT` | `9876` | server port |
-| `MODE__SERVER_MEMORY_LIMIT` | `256MB` | how much the server buffers for a late-joining viewer |
-| `MODE__VIDEO_FPS` | `30` | encoder time base; match the cameras |
 | `MODE__H264_PRESET` | `veryfast` | libx264 preset: `ultrafast` … `medium`, CPU vs file size |
-| `MODE__KEYFRAME_INTERVAL` | `60` | frames between H.264 keyframes in the file (2 s at 30 fps) |
-| `MODE__LIVE_JPEG_QUALITY` | `80` | JPEG quality for the live stream when a camera sends rgb8 |
+| `MODE__LIVE_JPEG_QUALITY` | `80` | JPEG quality for the live stream when a camera sends rgb8; lower it for a remote viewer on a slow link |
 | `MODE__INPUT_TIME` | `timestamp` | metadata key of the time messages are logged at (`timestamp` or `capture_time`) |
 | `MODE__JOINT_STATES` | `[]` | JSON list of the joint-state streams, which also move the 3D robot |
 | `MODE__PLOTS` | `{}` | JSON object, plot name -> its entities, e.g. `'{"elbow": ["arm_joint_state/elbow_joint", "joint_target/elbow_joint"]}'`; empty: one plot of all |
-| `MODE__ROBOT_URDF` | unset | robot URDF shown in 3D and moved by the `MODE__JOINT_STATES` streams, relative to the dataflow directory |
+| `MODE__URDF` | unset | robot URDF shown in 3D and moved by the `MODE__JOINT_STATES` streams, relative to the dataflow directory |
 | `MODE__CALIBRATION` | unset | camera calibration file (YAML), relative to the dataflow directory, e.g. `assets/cells/ur10e_tabletop/calibration.yaml` |
-| `MODE__SCENE` | unset | a scene file giving `MODE__ROBOT_URDF` and `MODE__CALIBRATION` |
-| `MODE__BLUEPRINT` | unset | Python file defining `blueprint`, sent instead of the generated layout |
+| `MODE__SCENE` | unset | a scene file giving `MODE__URDF` and `MODE__CALIBRATION` |
 
 ## `visualize` mode
 
-Waits until the record server accepts connections (a viewer does not retry a
-failed connection), then starts the viewer bundled with rerun-sdk on the server
+Waits up to 15 s until the record server accepts connections (a viewer does not
+retry a failed connection), then starts the viewer bundled with rerun-sdk on the server
 url in its own process session, and closes it when the node stops. The
 viewer's own log lines appear in the node's output. The blueprint comes from
 the recorder.
@@ -160,8 +149,6 @@ Output `node_state`: `ready`, `finished`.
 | --- | --- | --- |
 | `MODE__NAME` | `visualize` | |
 | `MODE__SERVER_URL` | `rerun+http://127.0.0.1:9876/proxy` | the record server; another machine: its address instead of 127.0.0.1 |
-| `MODE__SERVER_TIMEOUT` | `15` | seconds to wait for that server before giving up |
-| `MODE__MEMORY_LIMIT` | `2GB` | viewer memory budget |
 
 Any rerun viewer works as well: `rerun --connect rerun+http://<robot>:9876/proxy`
 (`--connect`, or the viewer's own server would take port 9876 on that machine).

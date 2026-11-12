@@ -1,17 +1,14 @@
 # sync
 
 Joins several streams into one message, a *tuple* (dora has no built-in join).
-Three modes decide which messages go together:
+Two modes decide which messages go together:
 
-1. **`tuple`**: the newest message of each input, once every input has a new one.
-2. **`align`**: every input's sample nearest a reference time: observations.
-3. **`step`**: the messages with the same `step`: an observation and its answer.
+1. **`align`**: every input's sample nearest a reference time: observations.
+2. **`step`**: the messages with the same `step`: an observation and its answer.
 
 ```
 src/config.py          # SyncConfig: `mode`, picked by MODE__NAME
-src/main.py            # dora skeleton, identical in every node
-src/bundler.py         # `tuple` mode's rules: when a tuple goes out, repeats, skew
-src/modes/tuple.py     # `tuple` mode
+src/main.py            # runs the modes (akai_node)
 src/modes/align.py     # `align` mode
 src/modes/step.py      # `step` mode
 examples/              # test dataflows: sync with dora's timers and node-hub nodes only
@@ -30,49 +27,21 @@ examples/              # test dataflows: sync with dora's timers and node-hub no
 Inputs: every id in `inputs`, and `program_state` (the node stops on
 `disconnect`). Outputs: `<output>` (the tuple) and `node_state` (`ready`).
 
-`tuple` and `align` check *skew*, how far apart in time a tuple's elements are, when
-`max_skew` is set, and handle it as `on_skew` says: `ignore`, `warn` or `error`
-(stop the node).
-
 Every `*_TIME` setting names a metadata key holding a time: dora's `timestamp`
 or seconds since the epoch, like `capture_time`.
 
-## `tuple` mode
-
-1. A message replaces its input's previous one: the newest wins, nothing queues.
-2. Once every input has sent a new message since the last tuple, a tuple of them
-   goes out at once. There is no timer: a tuple waits only for the slowest input.
-3. Until then nothing goes out: no old message is resent, no partial tuple sent.
-   If a producer stops, tuples stop too, on purpose: resending its last message
-   would tell the consumer that a dead part is still alive.
-4. An input that sends again before its tuple is complete is a *repeat*, handled
-   as `on_repeat` says: normal when a fast producer waits on a slow one, trouble
-   when the inputs should arrive in lockstep.
-5. The tuple's `capture_time` is the oldest of its elements', when they all have
-   one. Skew is the spread of the elements' times (`skew_time`).
-
-| var | default | meaning |
-| --- | --- | --- |
-| `MODE__NAME` | required | `tuple` |
-| `MODE__INPUTS` | required | JSON list of the input ids, in field order |
-| `MODE__OUTPUT` | required | output id of the tuple |
-| `MODE__ON_REPEAT` | `ignore` | `ignore`, `warn` or `error` on a repeat |
-| `MODE__MAX_SKEW` | unset | seconds; unset: not checked |
-| `MODE__ON_SKEW` | `warn` | `ignore`, `warn` (once when skew appears) or `error` |
-| `MODE__SKEW_TIME` | `capture_time` | metadata key of the elements' time (required on every input) |
-
 ## `align` mode
 
-1. Every input keeps its samples of the last `history` seconds. A sample's time
-   is dora's send `timestamp`, or its `capture_time` (`input_time`).
+1. Every input keeps its samples of the last second. A sample's time is dora's
+   send `timestamp`, or its `capture_time` (`input_time`).
 2. Every message on the `reference` input adds a reference time t (its
    `timestamp` or `capture_time`, by `reference_time`).
 3. t is settled once every input has a sample at or after it, so the nearest is
-   known, or once `timeout` has passed since t (then the nearest so far).
+   known, or 0.2 s after t (then the nearest so far).
    Reference times settle in order.
 4. A settled t becomes a tuple of every input's sample nearest t, with
    `capture_time` = t. Skew is each element's distance from t; every tuple over
-   `max_skew` is reported, naming its elements.
+   `max_skew` is reported as `on_skew` says, naming its elements.
 5. Until every input has sent once, reference times are dropped.
 
 Aligned by `capture_time`, a late camera frame still lines up with the joint
@@ -87,10 +56,8 @@ chooses among samples.
 | `MODE__INPUTS` | required | JSON list of the input ids to align, in field order |
 | `MODE__INPUT_TIME` | `timestamp` | metadata key of an input message's time (required on every message) |
 | `MODE__OUTPUT` | required | output id of the tuple |
-| `MODE__HISTORY` | `1.0` | seconds of samples kept per input |
-| `MODE__TIMEOUT` | `0.2` | seconds a reference time waits for every input |
 | `MODE__MAX_SKEW` | unset | seconds an element may be off its reference time; unset: not checked |
-| `MODE__ON_SKEW` | `warn` | `ignore`, `warn` (per tuple) or `error` |
+| `MODE__ON_SKEW` | `warn` | `warn` (per tuple) or `error` (stop the node) |
 
 For example, an observation aligned to the observation clock the sim ticks on:
 
@@ -113,7 +80,8 @@ For example, an observation aligned to the observation clock the sim ticks on:
 
 1. Every message needs `step`.
 2. Once every input has sent the same step, their tuple goes out at once.
-3. Incomplete steps are dropped when a newer one completes (`on_drop`).
+3. Incomplete steps are dropped with a warning when a newer one completes; at
+   most 30 wait.
 4. `elements` picks which elements go on, so a consumer gets only what it uses.
 
 | var | default | meaning |
@@ -122,8 +90,6 @@ For example, an observation aligned to the observation clock the sim ticks on:
 | `MODE__INPUTS` | required | JSON list of the input ids to join, in field order |
 | `MODE__ELEMENTS` | every element | JSON list of the joined tuple's elements to send on, in order |
 | `MODE__OUTPUT` | required | output id of the tuple |
-| `MODE__ON_DROP` | `warn` | `ignore`, `warn` (per dropped step) or `error` |
-| `MODE__MAX_PENDING` | `30` | incomplete steps kept waiting |
 
 For example, the joint states of an observation and the target answering it,
 for pink:
@@ -142,21 +108,12 @@ for pink:
 
 ## Examples
 
-Test dataflows using only sync, dora's timers and node-hub nodes; exit code 1
-means failed.
-
-1. `tuple_test.yml`: two senders send one fixed array each; `pyarrow-assert`
-   checks the tuple. It ends by itself.
-2. `tuple_timers.yml`: a 100 ms and a 330 ms timer; one tuple per slow tick, the
-   fast timer's extra ticks logged as repeats, drifting rates logged as skew.
-3. `align_timers.yml`: a 100 ms reference and a 20 ms and a 30 ms input; every
-   tuple must hold each input's nearest tick (`max_skew` 20 ms, `on_skew: error`).
-
-The timer examples run until stopped, so run them with `--stop-after`:
+`examples/align_timers.yml` tests `align` with dora's timers and the node-hub
+`pyarrow-assert` only: a 100 ms reference and a 20 ms and a 30 ms input; every
+tuple must hold each input's nearest tick (`max_skew` 15 ms, `on_skew: error`).
+It runs until stopped, so it passes when it ends by itself:
 
 ```sh
 uv run dora build nodes/sync/examples/align_timers.yml
-uv run dora run   nodes/sync/examples/tuple_test.yml
-uv run dora run   nodes/sync/examples/tuple_timers.yml --stop-after 5s
 uv run dora run   nodes/sync/examples/align_timers.yml --stop-after 5s
 ```

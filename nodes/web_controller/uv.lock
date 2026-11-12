@@ -7,6 +7,23 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "akai-node"
+version = "0.1.0"
+source = { editable = "../../libs/akai_node" }
+dependencies = [
+    { name = "dora-rs" },
+    { name = "pyarrow" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dora-rs" },
+    { name = "pyarrow" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
+]
+
+[[package]]
 name = "akai-scene"
 version = "0.1.0"
 source = { editable = "../../libs/akai_scene" }
@@ -1009,6 +1026,7 @@ name = "web-controller"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "akai-node" },
     { name = "akai-scene" },
     { name = "akai-tuple" },
     { name = "dora-rs" },
@@ -1023,6 +1041,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "akai-node", editable = "../../libs/akai_node" },
     { name = "akai-scene", editable = "../../libs/akai_scene" },
     { name = "akai-tuple", editable = "../../libs/akai_tuple" },
     { name = "dora-rs", specifier = "==1.1.0" },
